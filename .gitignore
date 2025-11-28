@@ -208,3 +208,5 @@ __marimo__/
 
 # Settings
 settings.ini
+
+Data/vocab_10k.txt
