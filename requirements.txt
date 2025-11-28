@@ -4,3 +4,4 @@ keyboard
 lemminflect
 pyinstaller
 pyttsx3
+playsound==1.2.2

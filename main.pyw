@@ -3,10 +3,11 @@ import keyboard
 import re
 import ctypes
 import tkinter as tk
+import time
 
 from vocab import init_vocab, is_word_too_simple
 from network import fetch_word_translation, fetch_examples, fetch_image, fetch_sentence_translation, \
-    fetch_full_dictionary_data
+    fetch_full_dictionary_data, load_full_dictionary_data
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
 
@@ -37,19 +38,24 @@ def worker_trans(tgt, app):
     app.after(0, lambda: app.update_trans_ui(res, "API" if res and not res.get('cached') else "Cache"))
 
 
-def worker_ex(tgt, app):
-    res = fetch_examples(tgt)
-    app.after(0, lambda: app.update_ex_ui(res))
-
-
 def worker_img(tgt, app):
+    """Воркер для загрузки картинки (верул его обратно!)"""
     path, src = fetch_image(tgt)
     app.after(0, lambda: app.update_img_ui(path, src))
 
 
-def worker_full_data(tgt):
-    """Фоновое кэширование полных данных - без обновления UI"""
-    fetch_full_dictionary_data(tgt)
+def worker_full_data_display(tgt, app):
+    """Загружает и отображает полные данные из кэша с ожиданием"""
+    # Сначала пытаемся загрузить из кэша
+    full_data = load_full_dictionary_data(tgt)
+
+    # Если данных нет, кэшируем и ждем
+    if not full_data:
+        fetch_full_dictionary_data(tgt)
+        time.sleep(1.0)  # Даем время на скачивание
+        full_data = load_full_dictionary_data(tgt)
+
+    app.after(0, lambda: app.update_full_data_ui(full_data))
 
 
 # --- ЛОГИКА СЛОВАРЯ (ОДИНОЧНЫЕ СЛОВА) ---
@@ -59,43 +65,30 @@ def process_word_parallel(w, app):
 
     app.after(0, lambda: app.reset_ui(tgt))
 
-    # Запускаем основные потоки для UI
+    # Запускаем потоки
     threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
-    threading.Thread(target=worker_ex, args=(tgt, app), daemon=True).start()
-    threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()
-
-    # НОВЫЙ ПОТОК: Фоновое кэширование полных данных из dictionaryapi.dev
-    threading.Thread(target=worker_full_data, args=(tgt,), daemon=True).start()
+    threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()  # <-- Вернул запуск потока с картинкой
+    threading.Thread(target=worker_full_data_display, args=(tgt, app), daemon=True).start()
 
 
-# --- ГЛАВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ UI (FIXED) ---
+# --- ГЛАВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ UI ---
 def trigger_sentence_update(app):
     global TRANSLATION_TIMER
 
-    # 1. Мгновенно обновляем английский текст (визуализация набора)
-    # Используем get_text_with_cursor для отображения палочки |
     eng_display = EDITOR.get_text_with_cursor()
-
-    # Обновляем метку через after_idle (безопасно и быстро)
     app.after_idle(lambda: app.sent_window.lbl_eng.config(text=eng_display))
 
-    # 2. Логика "Debounce" (Отложенный перевод)
-    # Если предыдущий таймер еще не сработал (мы быстро печатаем) - отменяем его
     if TRANSLATION_TIMER is not None:
         TRANSLATION_TIMER.cancel()
 
-    # Эта функция запустится только через 0.6 секунды тишины
     def delayed_translation_task():
         clean_text = EDITOR.get_text().strip()
         if clean_text:
-            # Делаем запрос к Google (это может занять время)
             tr_text = fetch_sentence_translation(clean_text)
-            # Обновляем UI русского текста
             app.after(0, lambda: app.sent_window.lbl_rus.config(text=tr_text))
         else:
             app.after(0, lambda: app.sent_window.lbl_rus.config(text="..."))
 
-    # Заводим новый таймер на 0.6 сек
     TRANSLATION_TIMER = threading.Timer(0.6, delayed_translation_task)
     TRANSLATION_TIMER.start()
 
@@ -115,7 +108,6 @@ def on_key_event(e):
 
     # 1. СИМВОЛЫ
     if len(key) == 1:
-        # Если начали писать после точки - сброс
         if SENTENCE_FINISHED and key not in [' ', '.', '!', '?', ',']:
             EDITOR.clear()
             SENTENCE_FINISHED = False
@@ -124,7 +116,6 @@ def on_key_event(e):
         EDITOR.insert(key)
         update_needed = True
 
-        # Логика сбора отдельного слова для словаря
         if re.match(r'^[a-zA-Z]$', key):
             BUFFER += key
         elif key in [' ', '.', ',', '!', '?']:
@@ -163,7 +154,6 @@ def on_key_event(e):
         EDITOR.move_right()
         update_needed = True
 
-    # Запускаем обновление, если текст изменился
     if update_needed:
         trigger_sentence_update(APP)
 
@@ -171,6 +161,6 @@ def on_key_event(e):
 if __name__ == "__main__":
     init_vocab()
     APP = MainWindow()
-    APP.hook_func = on_key_event  # Для возврата хука после настроек
+    APP.hook_func = on_key_event
     keyboard.hook(on_key_event)
     APP.mainloop()
