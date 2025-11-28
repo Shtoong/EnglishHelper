@@ -37,11 +37,11 @@ class SentenceWindow(tk.Toplevel):
         self.wm_attributes("-topmost", True)
         self.configure(bg=COLORS["bg"])
 
-        # Загружаем сохраненные координаты и размеры или дефолтные
+        # Загружаем сохраненные координаты и размеры
         x = cfg.get("USER", "SentWindowX", "500")
         y = cfg.get("USER", "SentWindowY", "500")
         w = cfg.get("USER", "SentWindowWidth", "600")
-        h = cfg.get("USER", "SentWindowHeight", "200")  # Чуть увеличил дефолтную высоту
+        h = cfg.get("USER", "SentWindowHeight", "200")
 
         self.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -57,24 +57,23 @@ class SentenceWindow(tk.Toplevel):
             self.withdraw()
 
     def _init_ui(self):
-        # Основной контейнер для контента
+        # Основной контейнер
         self.content_frame = tk.Frame(self, bg=self.COLORS["bg"])
         self.content_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         self.lbl_eng = tk.Label(self.content_frame, text="", font=("Consolas", 12),
                                 bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                wraplength=580, justify="left")
-        self.lbl_eng.pack(anchor="w", pady=(5, 5), fill="x")
+                                justify="left", anchor="w")
+        self.lbl_eng.pack(pady=(5, 5), fill="x")
 
         tk.Frame(self.content_frame, height=1, bg=self.COLORS["separator"]).pack(fill="x", pady=5)
 
-        # УВЕЛИЧЕННЫЙ ШРИФТ ЗДЕСЬ (было 11, стало 33)
         self.lbl_rus = tk.Label(self.content_frame, text="...", font=("Segoe UI", 33),
                                 bg=self.COLORS["bg"], fg=self.COLORS["text_accent"],
-                                wraplength=580, justify="left")
-        self.lbl_rus.pack(anchor="w", pady=(5, 0), fill="x")
+                                justify="left", anchor="w")
+        self.lbl_rus.pack(pady=(5, 0), fill="x")
 
-        # Нижняя панель для Grip (чтобы он был в углу)
+        # Нижняя панель для Grip
         self.bottom_frame = tk.Frame(self, bg=self.COLORS["bg"], height=15)
         self.bottom_frame.pack(side="bottom", fill="x")
 
@@ -87,21 +86,34 @@ class SentenceWindow(tk.Toplevel):
         self.bind("<B1-Motion>", self.do_move)
         self.bind("<ButtonRelease-1>", self.stop_move)
 
+        # ВАЖНО: Следим за изменением размера окна системой
+        self.bind("<Configure>", self._on_configure)
+
+    def _on_configure(self, event):
+        """Автоматически обновляет перенос строк при изменении ширины"""
+        # Проверяем, что событие от самого окна, а не от внутренних виджетов
+        if event.widget == self:
+            new_width = event.width
+            text_wrap = new_width - 30  # Отступ для красоты
+            if text_wrap < 100: text_wrap = 100
+
+            self.lbl_eng.config(wraplength=text_wrap)
+            self.lbl_rus.config(wraplength=text_wrap)
+
     # --- RESIZE LOGIC ---
     def resize_window(self, dx, dy):
         new_w = self.winfo_width() + dx
         new_h = self.winfo_height() + dy
 
-        # Минимальные размеры
         if new_w < 300: new_w = 300
         if new_h < 100: new_h = 100
 
         self.geometry(f"{new_w}x{new_h}")
 
-        # Обновляем ширину перевода текста (wraplength), чтобы текст переносился
-        text_width = new_w - 20
-        self.lbl_eng.config(wraplength=text_width)
-        self.lbl_rus.config(wraplength=text_width)
+        # Обновляем wrap сразу при перетаскивании грипа
+        text_wrap = new_w - 30
+        self.lbl_eng.config(wraplength=text_wrap)
+        self.lbl_rus.config(wraplength=text_wrap)
 
     def save_size(self):
         cfg.set("USER", "SentWindowWidth", self.winfo_width())
@@ -109,11 +121,9 @@ class SentenceWindow(tk.Toplevel):
 
     # --- MOVE LOGIC ---
     def start_move(self, event):
-        # Если кликнули по грипу - не таскаем окно
         if event.widget == self.grip:
             self.dragging_allowed = False
             return
-
         self.dragging_allowed = True
         self.x = event.x
         self.y = event.y

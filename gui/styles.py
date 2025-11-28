@@ -1,28 +1,36 @@
-# Темная тема в стиле modern dark UI
+# Стиль Monkeytype (Serika Dark)
+# Лаконичная, матовая, высококонтрастная палитра
+
 COLORS = {
-    "bg": "#1E1E1E",           # Темный фон
-    "bg_secondary": "#2D2D2D",  # Вторичный фон для карточек
-    "text_main": "#E0E0E0",     # Основной текст
-    "text_header": "#4EC9B0",   # Заголовок слова (cyan/teal)
-    "text_accent": "#569CD6",   # Акцент (голубой)
-    "text_faint": "#808080",    # Приглушенный текст
-    "text_phonetic": "#CE9178", # Транскрипция (оранжевый)
-    "text_pos": "#DCDCAA",      # Часть речи (желтый)
-    "text_synonym": "#9CDCFE",  # Синонимы (светло-голубой)
-    "close_btn": "#F48771",     # Кнопка закрытия
-    "separator": "#404040",     # Разделитель
-    "button_bg": "#3E3E42",     # Фон кнопки
-    "button_hover": "#505050",  # Ховер кнопки
-    "resize_grip": "#505050",   # Цвет треугольника изменения размера
+    "bg": "#323437",  # Основной фон (Мягкий темно-серый)
+    "bg_secondary": "#2C2E31",  # Более темный фон (для треков слайдеров и инпутов)
+
+    "text_main": "#D1D0C5",  # Основной текст (Светло-серый/Бежевый)
+    "text_header": "#E2B714",  # Главное слово (Фирменный желтый Monkeytype)
+
+    "text_accent": "#E2B714",  # Акцент (для примеров и выделений)
+    "text_faint": "#646669",  # Приглушенный текст (для тех. информации)
+
+    "text_phonetic": "#646669",  # Транскрипция (в цвет вторичного текста)
+    "text_pos": "#E2B714",  # Часть речи (Акцент)
+    "text_synonym": "#D1D0C5",  # Синонимы (Как основной текст)
+
+    "close_btn": "#CA4754",  # Кнопка закрытия (Мягкий красный/Error color)
+    "separator": "#646669",  # Разделители
+
+    "button_bg": "#2C2E31",  # Фон кнопок (Темнее фона)
+    "button_hover": "#45474A",  # При наведении
+
+    "resize_grip": "#646669",  # Цвет треугольника ресайза
 }
 
 FONTS = {
-    "header": ("Segoe UI", 16, "bold"),
-    "phonetic": ("Consolas", 11),
+    "header": ("Segoe UI", 18, "bold"),  # Чуть крупнее
+    "phonetic": ("Consolas", 11),  # Моноширинный для транскрипции
     "pos": ("Segoe UI", 10, "italic"),
-    "definition": ("Segoe UI", 10),
-    "example": ("Segoe UI", 9, "italic"),
-    "synonym": ("Segoe UI", 9),
+    "definition": ("Segoe UI", 11),  # Основной текст читабельнее
+    "example": ("Segoe UI", 10, "italic"),
+    "synonym": ("Segoe UI", 10),
     "ui": ("Segoe UI", 9),
     "console": ("Consolas", 8)
 }

@@ -125,10 +125,12 @@ class MainWindow(tk.Tk):
         self.btn_audio_uk.pack(side="left", padx=2)
         self.btn_audio_uk.bind("<Button-1>", lambda e: self.play_audio(1))
 
-        # Русский перевод
+        # Русский перевод (ИЗМЕНЕНО: шрифт и цвет)
         self.lbl_rus = tk.Label(
-            self, text="Ready", font=self.FONTS["definition"],
-            bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
+            self, text="Ready",
+            font=("Segoe UI", 33),  # Большой шрифт
+            bg=self.COLORS["bg"],
+            fg=self.COLORS["text_accent"],  # Желтый цвет
             wraplength=380, justify="center"
         )
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
@@ -368,8 +370,6 @@ class MainWindow(tk.Tk):
                 if p.get("audio"): self.current_audio_urls.append(p["audio"])
         else:
             self.lbl_phonetic.config(text="")
-
-        # БЛОК AUTO-PRONOUNCE УДАЛЕН ОТСЮДА (ПЕРЕНЕСЕН В MAIN.PYW)
 
         # --- ВЫВОД ЗНАЧЕНИЙ ---
         meanings = full_data.get("meanings", [])
