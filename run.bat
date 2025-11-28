@@ -7,3 +7,5 @@ cd /d "%~dp0"
 start "" "venv\Scripts\pythonw.exe" "main.pyw"
 
 exit
+
+:: test comment
