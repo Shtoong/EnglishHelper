@@ -1,0 +1,21 @@
+[API]
+# Yandex Dictionary API key - get it from https://yandex.com/dev/dictionary/
+YandexKey = 
+
+# Pexels API key - get it from https://www.pexels.com/api/
+PexelsKey = 
+
+[USER]
+# Vocabulary level filter (1-10000, lower = more common words)
+VocabLevel = 10
+
+# Main window position (X, Y coordinates)
+WindowX = 100
+WindowY = 100
+
+# Sentence translation window position (X, Y coordinates)
+WindowSentX = 450
+WindowSentY = 100
+
+# Show/hide sentence translation window (True/False)
+ShowSentenceWindow = True
