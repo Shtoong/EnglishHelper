@@ -5,9 +5,11 @@ import ctypes
 import tkinter as tk
 import time
 
+# Добавляем cfg в импорты
+from config import cfg
 from vocab import init_vocab, is_word_too_simple
-from network import fetch_word_translation, fetch_examples, fetch_image, fetch_sentence_translation, \
-    fetch_full_dictionary_data, load_full_dictionary_data
+from network import fetch_word_translation, fetch_image, fetch_sentence_translation, fetch_full_dictionary_data, \
+    load_full_dictionary_data
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
 
@@ -17,7 +19,6 @@ SENTENCE_FINISHED = False
 EDITOR = TextEditorSimulator()
 RU_TO_EN = {ru: en for ru, en in zip("йцукенгшщзхъфывапролджэячсмитьбю", "qwertyuiop[]asdfghjkl;'zxcvbnm,.")}
 
-# Таймер для отложенного перевода
 TRANSLATION_TIMER = None
 
 
@@ -32,46 +33,72 @@ def is_english_layout():
         return True
 
 
-# --- WORKERS (СЛОВА) ---
+# --- WORKERS ---
 def worker_trans(tgt, app):
     res = fetch_word_translation(tgt)
     app.after(0, lambda: app.update_trans_ui(res, "API" if res and not res.get('cached') else "Cache"))
 
 
 def worker_img(tgt, app):
-    """Воркер для загрузки картинки (верул его обратно!)"""
     path, src = fetch_image(tgt)
     app.after(0, lambda: app.update_img_ui(path, src))
 
 
 def worker_full_data_display(tgt, app):
-    """Загружает и отображает полные данные из кэша с ожиданием"""
-    # Сначала пытаемся загрузить из кэша
+    """Загружает данные и сразу воспроизводит звук, если нужно"""
     full_data = load_full_dictionary_data(tgt)
 
-    # Если данных нет, кэшируем и ждем
+    # Если данных нет - качаем
     if not full_data:
         fetch_full_dictionary_data(tgt)
-        time.sleep(1.0)  # Даем время на скачивание
+        time.sleep(0.5)  # Уменьшил задержку до 0.5 сек для скорости
         full_data = load_full_dictionary_data(tgt)
 
+    # --- FAST TRACK AUDIO ---
+    # Запускаем звук сразу здесь, в фоне, не дожидаясь отрисовки UI
+    if full_data:
+        try:
+            if cfg.get_bool("USER", "AutoPronounce"):
+                phonetics = full_data.get("phonetics", [])
+                audio_url = None
+
+                # 1. Ищем US вариант
+                for p in phonetics:
+                    if p.get("audio") and "-us.mp3" in p["audio"]:
+                        audio_url = p["audio"]
+                        break
+
+                # 2. Если нет US, берем любой доступный
+                if not audio_url:
+                    for p in phonetics:
+                        if p.get("audio"):
+                            audio_url = p["audio"]
+                            break
+
+                # 3. Если нашли URL - играем немедленно
+                if audio_url:
+                    # Вызываем метод проигрывания напрямую в отдельном потоке
+                    threading.Thread(target=app._play_audio_worker, args=(audio_url,), daemon=True).start()
+        except Exception as e:
+            print(f"Auto-play error: {e}")
+
+    # Обновляем UI (отрисовка текста)
     app.after(0, lambda: app.update_full_data_ui(full_data))
 
 
-# --- ЛОГИКА СЛОВАРЯ (ОДИНОЧНЫЕ СЛОВА) ---
+# --- LOGIC ---
 def process_word_parallel(w, app):
     too_simple, tgt = is_word_too_simple(w, app.vocab_var.get())
     if too_simple: return
 
     app.after(0, lambda: app.reset_ui(tgt))
 
-    # Запускаем потоки
     threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
-    threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()  # <-- Вернул запуск потока с картинкой
+    threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()
     threading.Thread(target=worker_full_data_display, args=(tgt, app), daemon=True).start()
 
 
-# --- ГЛАВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ UI ---
+# --- UI UPDATE ---
 def trigger_sentence_update(app):
     global TRANSLATION_TIMER
 
@@ -93,11 +120,10 @@ def trigger_sentence_update(app):
     TRANSLATION_TIMER.start()
 
 
-# --- KEYBOARD HOOK ---
+# --- HOOK ---
 def on_key_event(e):
     global BUFFER, SENTENCE_FINISHED
     if e.event_type == 'down': return
-
     if not is_english_layout(): return
 
     key = e.name
@@ -106,14 +132,12 @@ def on_key_event(e):
 
     update_needed = False
 
-    # 1. СИМВОЛЫ
     if len(key) == 1:
         if SENTENCE_FINISHED and key not in [' ', '.', '!', '?', ',']:
-            EDITOR.clear()
-            SENTENCE_FINISHED = False
+            EDITOR.clear();
+            SENTENCE_FINISHED = False;
             update_needed = True
-
-        EDITOR.insert(key)
+        EDITOR.insert(key);
         update_needed = True
 
         if re.match(r'^[a-zA-Z]$', key):
@@ -122,40 +146,35 @@ def on_key_event(e):
             if BUFFER:
                 threading.Thread(target=process_word_parallel, args=(BUFFER, APP), daemon=True).start()
                 BUFFER = ""
-            if key in ['.', '!', '?']:
-                SENTENCE_FINISHED = True
+            if key in ['.', '!', '?']: SENTENCE_FINISHED = True
 
-    # 2. ПРОБЕЛ
     elif key_lower == 'space':
-        EDITOR.insert(" ")
+        EDITOR.insert(" ");
         update_needed = True
         if BUFFER:
             threading.Thread(target=process_word_parallel, args=(BUFFER, APP), daemon=True).start()
             BUFFER = ""
 
-    # 3. УДАЛЕНИЕ
     elif key_lower == 'backspace':
-        EDITOR.backspace()
+        EDITOR.backspace();
         update_needed = True
         if BUFFER: BUFFER = BUFFER[:-1]
         SENTENCE_FINISHED = False
 
     elif key_lower == 'delete':
-        EDITOR.delete()
-        update_needed = True
+        EDITOR.delete();
+        update_needed = True;
         SENTENCE_FINISHED = False
 
-    # 4. НАВИГАЦИЯ
     elif key_lower == 'left':
-        EDITOR.move_left()
+        EDITOR.move_left();
         update_needed = True
 
     elif key_lower == 'right':
-        EDITOR.move_right()
+        EDITOR.move_right();
         update_needed = True
 
-    if update_needed:
-        trigger_sentence_update(APP)
+    if update_needed: trigger_sentence_update(APP)
 
 
 if __name__ == "__main__":

@@ -147,14 +147,12 @@ class MainWindow(tk.Tk):
             scroll_container, bg=self.COLORS["bg"], highlightthickness=0
         )
 
-        # Сохраняем скроллбар в self, чтобы управлять им
         self.scrollbar = tk.Scrollbar(
             scroll_container, orient="vertical", command=self.canvas_scroll.yview
         )
 
         self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=self.COLORS["bg"])
 
-        # Привязываем события для авто-скрытия скролла
         self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
         self.canvas_scroll.bind("<Configure>", self._on_canvas_configure)
 
@@ -164,7 +162,6 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
 
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
-        # Скроллбар пока не пакуем - это сделает _check_scroll_needed
 
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
 
@@ -259,10 +256,8 @@ class MainWindow(tk.Tk):
         canvas_height = self.canvas_scroll.winfo_height()
 
         if content_height > canvas_height:
-            # Показываем справа
             self.scrollbar.pack(side="right", fill="y")
         else:
-            # Скрываем
             self.scrollbar.pack_forget()
 
     # ------------- RESIZE LOGIC -------------
@@ -374,8 +369,10 @@ class MainWindow(tk.Tk):
         else:
             self.lbl_phonetic.config(text="")
 
+        # БЛОК AUTO-PRONOUNCE УДАЛЕН ОТСЮДА (ПЕРЕНЕСЕН В MAIN.PYW)
+
+        # --- ВЫВОД ЗНАЧЕНИЙ ---
         meanings = full_data.get("meanings", [])
-        # Корректируем ширину текста, учитывая возможный скроллбар
         window_width = self.winfo_width() - 60
 
         for meaning in meanings:
@@ -464,45 +461,69 @@ class MainWindow(tk.Tk):
         keyboard.unhook_all()
         top = tk.Toplevel(self)
         top.title("Settings");
-        top.geometry("350x350")
+        top.geometry("350x400")
         top.configure(bg=self.COLORS["bg"]);
         top.attributes("-topmost", True)
 
         tk.Label(top, text="Settings", font=("Segoe UI", 14, "bold"), bg=self.COLORS["bg"],
                  fg=self.COLORS["text_header"]).pack(pady=10)
+
+        # Keys
         tk.Label(top, text="Yandex Dictionary Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
                                                                                                              padx=20)
         entry_yandex = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0);
         entry_yandex.pack(padx=20, pady=5, ipady=3);
         entry_yandex.insert(0, cfg.get("API", "YandexKey"))
+
         tk.Label(top, text="Pexels API Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
                                                                                                       padx=20)
         entry_pexels = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0);
         entry_pexels.pack(padx=20, pady=5, ipady=3);
         entry_pexels.insert(0, cfg.get("API", "PexelsKey"))
-        show_sent_var = tk.BooleanVar(value=cfg.get_bool("USER", "ShowSentenceWindow"))
-        chk_frame = tk.Frame(top, bg=self.COLORS["bg"]);
+
+        # Checkboxes Frame
+        chk_frame = tk.Frame(top, bg=self.COLORS["bg"])
         chk_frame.pack(anchor="w", padx=20, pady=15)
-        chk = tk.Checkbutton(chk_frame, text="Show Sentence Window", variable=show_sent_var, onvalue=True,
-                             offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                             selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"]);
-        chk.pack(side="left")
+
+        # Show Sentence Window
+        show_sent_var = tk.BooleanVar(value=cfg.get_bool("USER", "ShowSentenceWindow"))
+        chk_sent = tk.Checkbutton(chk_frame, text="Show Sentence Window", variable=show_sent_var, onvalue=True,
+                                  offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
+                                  selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
+        chk_sent.pack(anchor="w", pady=2)
+
+        # Auto Pronounce
+        try:
+            val_pronounce = cfg.get_bool("USER", "AutoPronounce")
+        except:
+            val_pronounce = False
+
+        auto_pronounce_var = tk.BooleanVar(value=val_pronounce)
+        chk_pronounce = tk.Checkbutton(chk_frame, text="Auto-pronounce (US)", variable=auto_pronounce_var, onvalue=True,
+                                       offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
+                                       selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
+        chk_pronounce.pack(anchor="w", pady=2)
 
         def save_and_close():
-            cfg.set("API", "YandexKey", entry_yandex.get().strip());
+            cfg.set("API", "YandexKey", entry_yandex.get().strip())
             cfg.set("API", "PexelsKey", entry_pexels.get().strip())
-            new_state = show_sent_var.get();
-            cfg.set("USER", "ShowSentenceWindow", new_state)
-            if new_state:
+
+            # Save Sent Window state
+            new_sent_state = show_sent_var.get()
+            cfg.set("USER", "ShowSentenceWindow", new_sent_state)
+            if new_sent_state:
                 self.sent_window.show()
             else:
                 self.sent_window.hide()
-            top.destroy();
+
+            # Save Auto Pronounce state
+            cfg.set("USER", "AutoPronounce", auto_pronounce_var.get())
+
+            top.destroy()
             if hasattr(self, "hook_func"): keyboard.hook(self.hook_func)
-            messagebox.showinfo("Saved", "Settings saved!")
 
         def on_close():
-            top.destroy();
+            top.destroy()
             if hasattr(self, "hook_func"): keyboard.hook(self.hook_func)
 
         tk.Button(top, text="Save", command=save_and_close, bg=self.COLORS["text_accent"], fg="white",
@@ -511,44 +532,32 @@ class MainWindow(tk.Tk):
 
     # ------------- Window Move -------------
     def start_move(self, event):
-        """Начало перетаскивания окна"""
         widget = event.widget
-
         if isinstance(widget, (tk.Button, tk.Scale, tk.Scrollbar, tk.Entry)):
-            self.dragging_allowed = False
+            self.dragging_allowed = False;
             return
-
         if widget == self.grip:
-            self.dragging_allowed = False
+            self.dragging_allowed = False;
             return
-
         try:
             if widget.cget("cursor") == "hand2":
-                self.dragging_allowed = False
+                self.dragging_allowed = False;
                 return
         except:
             pass
-
-        self.dragging_allowed = True
-        self.x = event.x
+        self.dragging_allowed = True;
+        self.x = event.x;
         self.y = event.y
 
     def do_move(self, event):
-        """Процесс перетаскивания"""
         if not self.dragging_allowed: return
-
-        deltax = event.x - self.x
-        deltay = event.y - self.y
-
-        new_x = self.winfo_x() + deltax
-        new_y = self.winfo_y() + deltay
-
+        new_x = self.winfo_x() + (event.x - self.x);
+        new_y = self.winfo_y() + (event.y - self.y)
         self.geometry(f"+{new_x}+{new_y}")
 
     def stop_move(self, event):
-        """Конец перетаскивания"""
         if self.dragging_allowed:
-            cfg.set("USER", "WindowX", self.winfo_x())
+            cfg.set("USER", "WindowX", self.winfo_x());
             cfg.set("USER", "WindowY", self.winfo_y())
         self.dragging_allowed = False
 
