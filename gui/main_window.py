@@ -1,12 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox
 from PIL import Image, ImageTk
 import keyboard
 import sys
 import os
 import threading
 import requests
-import time
 
 from playsound import playsound
 
@@ -18,9 +16,10 @@ from network import fetch_sentence_translation
 
 
 class ResizeGrip(tk.Label):
+    """Виджет для изменения размера окна"""
+
     def __init__(self, parent, resize_callback, finish_callback, bg, fg):
         super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
-        self.parent = parent
         self.resize_callback = resize_callback
         self.finish_callback = finish_callback
         self.bind("<Button-1>", self._start_resize)
@@ -43,37 +42,56 @@ class ResizeGrip(tk.Label):
 
 
 class TranslationTooltip:
+    """Всплывающая подсказка с переводом"""
+
     def __init__(self, parent):
         self.parent = parent
         self.tip_window = None
         self.label = None
-        self.COLORS = COLORS
         self.animation_id = None
         self.spinner_chars = ["|", "/", "-", "\\"]
 
     def _create_window(self, x, y):
-        if self.tip_window: return
-        x += 15;
+        if self.tip_window:
+            return
+
+        x += 15
         y += 15
+
         self.tip_window = tk.Toplevel(self.parent)
         self.tip_window.wm_overrideredirect(True)
         self.tip_window.wm_geometry(f"+{x}+{y}")
         self.tip_window.wm_attributes("-topmost", True)
-        frame = tk.Frame(self.tip_window, bg=self.COLORS["bg_secondary"],
-                         highlightbackground=self.COLORS["text_accent"], highlightthickness=1)
+
+        frame = tk.Frame(
+            self.tip_window,
+            bg=COLORS["bg_secondary"],
+            highlightbackground=COLORS["text_accent"],
+            highlightthickness=1
+        )
         frame.pack()
-        self.label = tk.Label(frame, text="", justify='left', bg=self.COLORS["bg_secondary"],
-                              fg=self.COLORS["text_main"], font=("Segoe UI", 10), wraplength=300, padx=8, pady=4)
+
+        self.label = tk.Label(
+            frame,
+            text="",
+            justify='left',
+            bg=COLORS["bg_secondary"],
+            fg=COLORS["text_main"],
+            font=("Segoe UI", 10),
+            wraplength=300,
+            padx=8,
+            pady=4
+        )
         self.label.pack()
 
     def show_loading(self, x, y):
-        self.hide();
-        self._create_window(x, y);
+        self.hide()
+        self._create_window(x, y)
         self._animate(0)
 
     def show_text(self, text, x, y):
-        self.hide();
-        self._create_window(x, y);
+        self.hide()
+        self._create_window(x, y)
         self.label.config(text=text)
 
     def update_text(self, text):
@@ -82,7 +100,8 @@ class TranslationTooltip:
             self.label.config(text=text)
 
     def _animate(self, step):
-        if not self.tip_window: return
+        if not self.tip_window:
+            return
         char = self.spinner_chars[step % len(self.spinner_chars)]
         self.label.config(text=f"{char} Translating...")
         self.animation_id = self.parent.after(100, lambda: self._animate(step + 1))
@@ -103,203 +122,318 @@ class TranslationTooltip:
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.COLORS = COLORS;
-        self.FONTS = FONTS
-        self.overrideredirect(True);
+
+        # Настройка окна
+        self.overrideredirect(True)
         self.wm_attributes("-topmost", True)
-        x = cfg.get("USER", "WindowX", "100");
+
+        x = cfg.get("USER", "WindowX", "100")
         y = cfg.get("USER", "WindowY", "100")
-        w = cfg.get("USER", "WindowWidth", "400");
+        w = cfg.get("USER", "WindowWidth", "400")
         h = cfg.get("USER", "WindowHeight", "700")
         self.geometry(f"{w}x{h}+{x}+{y}")
-        self.configure(bg=self.COLORS["bg"])
+        self.configure(bg=COLORS["bg"])
+
+        # Состояние
         self.sources = {"trans": "wait", "img": "wait"}
-        self.dragging_allowed = False;
+        self.dragging_allowed = False
         self.popup = None
         self.current_audio_urls = [None, None]
-        self.current_image = None
-        self.sent_window = SentenceWindow(self)
-        self.tooltip = TranslationTooltip(self)
-        self.trans_cache = {};
+        self.trans_cache = {}
         self.hover_timer = None
-
-        # Callback для поиска (будет установлен из main.pyw)
         self.search_callback = None
 
-        self._init_ui();
+        # Создание виджетов
+        self.sent_window = SentenceWindow(self)
+        self.tooltip = TranslationTooltip(self)
+
+        self._init_ui()
         self._bind_events()
 
     def _init_ui(self):
-        top_bar = tk.Frame(self, bg=self.COLORS["bg"], height=30)
+        """Инициализация всех UI элементов"""
+        self._create_top_bar()
+        self._create_word_header()
+        self._create_translation_display()
+        self._create_image_container()
+        self._create_separator()
+        self._create_scrollable_content()
+        self._create_vocab_slider()
+        self._create_status_bar()
+
+    def _create_top_bar(self):
+        """Верхняя панель с кнопкой закрытия"""
+        top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
         top_bar.pack(fill="x", pady=(5, 0))
-        btn_close = tk.Label(top_bar, text="✕", font=("Arial", 12), bg=self.COLORS["bg"], fg=self.COLORS["close_btn"],
-                             cursor="hand2")
+
+        btn_close = tk.Label(
+            top_bar,
+            text="✕",
+            font=("Arial", 12),
+            bg=COLORS["bg"],
+            fg=COLORS["close_btn"],
+            cursor="hand2"
+        )
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
-        self.lbl_word = tk.Label(self, text="English Helper", font=self.FONTS["header"], bg=self.COLORS["bg"],
-                                 fg=self.COLORS["text_header"])
+    def _create_word_header(self):
+        """Заголовок слова с фонетикой и аудио"""
+        self.lbl_word = tk.Label(
+            self,
+            text="English Helper",
+            font=FONTS["header"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_header"]
+        )
         self.lbl_word.pack(pady=(10, 5), anchor="center")
-        phonetic_frame = tk.Frame(self, bg=self.COLORS["bg"])
+
+        # Фрейм с фонетикой и кнопками аудио
+        phonetic_frame = tk.Frame(self, bg=COLORS["bg"])
         phonetic_frame.pack(anchor="center", pady=5)
-        self.lbl_phonetic = tk.Label(phonetic_frame, text="", font=self.FONTS["phonetic"], bg=self.COLORS["bg"],
-                                     fg=self.COLORS["text_phonetic"])
+
+        self.lbl_phonetic = tk.Label(
+            phonetic_frame,
+            text="",
+            font=FONTS["phonetic"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_phonetic"]
+        )
         self.lbl_phonetic.pack(side="left", padx=5)
-        self.btn_audio_us = tk.Label(phonetic_frame, text="🔊 US", font=("Segoe UI", 9), bg=self.COLORS["button_bg"],
-                                     fg=self.COLORS["text_main"], cursor="hand2", padx=5, pady=2)
-        self.btn_audio_us.pack(side="left", padx=2)
-        self.btn_audio_us.bind("<Button-1>", lambda e: self.play_audio(0))
-        self.btn_audio_uk = tk.Label(phonetic_frame, text="🔊 UK", font=("Segoe UI", 9), bg=self.COLORS["button_bg"],
-                                     fg=self.COLORS["text_main"], cursor="hand2", padx=5, pady=2)
-        self.btn_audio_uk.pack(side="left", padx=2)
-        self.btn_audio_uk.bind("<Button-1>", lambda e: self.play_audio(1))
-        self.lbl_rus = tk.Label(self, text="Ready", font=("Segoe UI", 33), bg=self.COLORS["bg"],
-                                fg=self.COLORS["text_accent"], wraplength=380, justify="center")
+
+        self.btn_audio_us = self._create_audio_button(phonetic_frame, "🔊 US", 0)
+        self.btn_audio_uk = self._create_audio_button(phonetic_frame, "🔊 UK", 1)
+
+    def _create_audio_button(self, parent, text, index):
+        """Создает кнопку воспроизведения аудио"""
+        btn = tk.Label(
+            parent,
+            text=text,
+            font=("Segoe UI", 9),
+            bg=COLORS["button_bg"],
+            fg=COLORS["text_main"],
+            cursor="hand2",
+            padx=5,
+            pady=2
+        )
+        btn.pack(side="left", padx=2)
+        btn.bind("<Button-1>", lambda e: self.play_audio(index))
+        return btn
+
+    def _create_translation_display(self):
+        """Область отображения перевода"""
+        self.lbl_rus = tk.Label(
+            self,
+            text="Ready",
+            font=("Segoe UI", 33),
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"],
+            wraplength=380,
+            justify="center"
+        )
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
-        self.img_container = tk.Label(self, bg=self.COLORS["bg"])
+
+    def _create_image_container(self):
+        """Контейнер для изображения"""
+        self.img_container = tk.Label(self, bg=COLORS["bg"])
         self.img_container.pack(pady=5)
-        tk.Frame(self, height=1, bg=self.COLORS["separator"], width=360).pack(pady=5)
-        scroll_container = tk.Frame(self, bg=self.COLORS["bg"])
+
+    def _create_separator(self):
+        """Горизонтальный разделитель"""
+        tk.Frame(
+            self,
+            height=1,
+            bg=COLORS["separator"],
+            width=360
+        ).pack(pady=5)
+
+    def _create_scrollable_content(self):
+        """Прокручиваемая область с определениями"""
+        scroll_container = tk.Frame(self, bg=COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
-        self.canvas_scroll = tk.Canvas(scroll_container, bg=self.COLORS["bg"], highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=self.canvas_scroll.yview)
-        self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=self.COLORS["bg"])
+
+        self.canvas_scroll = tk.Canvas(
+            scroll_container,
+            bg=COLORS["bg"],
+            highlightthickness=0
+        )
+        self.scrollbar = tk.Scrollbar(
+            scroll_container,
+            orient="vertical",
+            command=self.canvas_scroll.yview
+        )
+        self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=COLORS["bg"])
+
         self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
         self.canvas_scroll.bind("<Configure>", self._on_canvas_configure)
+
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.bottom_frame = tk.Frame(self, bg=self.COLORS["bg"])
+
+    def _create_vocab_slider(self):
+        """Слайдер уровня словаря"""
+        self.bottom_frame = tk.Frame(self, bg=COLORS["bg"])
         self.bottom_frame.pack(side="bottom", fill="x", padx=0, pady=0)
-        slider_area = tk.Frame(self.bottom_frame, bg=self.COLORS["bg"])
+
+        slider_area = tk.Frame(self.bottom_frame, bg=COLORS["bg"])
         slider_area.pack(side="top", fill="x", padx=10, pady=(5, 0))
-        tk.Label(slider_area, text="Vocab:", font=self.FONTS["ui"], bg=self.COLORS["bg"],
-                 fg=self.COLORS["text_faint"]).pack(side="left")
+
+        tk.Label(
+            slider_area,
+            text="Vocab:",
+            font=FONTS["ui"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_faint"]
+        ).pack(side="left")
+
         self.vocab_var = tk.IntVar(value=int(cfg.get("USER", "VocabLevel")))
-        btn_minus = tk.Label(slider_area, text="<", font=("Consolas", 12, "bold"), bg=self.COLORS["bg"],
-                             fg=self.COLORS["text_accent"], cursor="hand2")
+
+        # Кнопки управления
+        btn_minus = tk.Label(
+            slider_area,
+            text="<",
+            font=("Consolas", 12, "bold"),
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"],
+            cursor="hand2"
+        )
         btn_minus.pack(side="left", padx=2)
         btn_minus.bind("<Button-1>", lambda e: self.change_level(-1))
-        self.scale = tk.Scale(slider_area, from_=0, to=100, orient="horizontal", variable=self.vocab_var, showvalue=0,
-                              bg=self.COLORS["bg"], troughcolor=self.COLORS["bg_secondary"],
-                              activebackground=self.COLORS["text_accent"], bd=0, highlightthickness=0, length=150)
+
+        # Слайдер
+        self.scale = tk.Scale(
+            slider_area,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            variable=self.vocab_var,
+            showvalue=0,
+            bg=COLORS["bg"],
+            troughcolor=COLORS["bg_secondary"],
+            activebackground=COLORS["text_accent"],
+            bd=0,
+            highlightthickness=0,
+            length=150
+        )
         self.scale.pack(side="left", padx=2, fill="x", expand=True)
-        btn_plus = tk.Label(slider_area, text=">", font=("Consolas", 12, "bold"), bg=self.COLORS["bg"],
-                            fg=self.COLORS["text_accent"], cursor="hand2")
+
+        btn_plus = tk.Label(
+            slider_area,
+            text=">",
+            font=("Consolas", 12, "bold"),
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"],
+            cursor="hand2"
+        )
         btn_plus.pack(side="left", padx=2)
         btn_plus.bind("<Button-1>", lambda e: self.change_level(1))
-        self.lbl_lvl_val = tk.Label(slider_area, text=str(self.vocab_var.get()), font=("Segoe UI", 9, "bold"),
-                                    bg=self.COLORS["bg"], fg=self.COLORS["text_header"])
+
+        # Отображение значения
+        self.lbl_lvl_val = tk.Label(
+            slider_area,
+            text=str(self.vocab_var.get()),
+            font=("Segoe UI", 9, "bold"),
+            bg=COLORS["bg"],
+            fg=COLORS["text_header"]
+        )
         self.lbl_lvl_val.pack(side="left", padx=(5, 0))
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
-        # --- BOTTOM BAR ---
-        status_bar = tk.Frame(self.bottom_frame, bg=self.COLORS["bg"])
+    def _create_status_bar(self):
+        """Нижняя панель статуса с кнопками управления"""
+        status_bar = tk.Frame(self.bottom_frame, bg=COLORS["bg"])
         status_bar.pack(side="bottom", fill="x", pady=2)
-        self.grip = ResizeGrip(status_bar, self.resize_window, self.save_size, self.COLORS["bg"],
-                               self.COLORS["resize_grip"])
+
+        # Resize grip
+        self.grip = ResizeGrip(
+            status_bar,
+            self.resize_window,
+            self.save_size,
+            COLORS["bg"],
+            COLORS["resize_grip"]
+        )
         self.grip.pack(side="right", anchor="se")
-        self.lbl_status = tk.Label(status_bar, text="Waiting...", font=("Segoe UI", 7), bg=self.COLORS["bg"],
-                                   fg=self.COLORS["text_faint"])
+
+        # Статус
+        self.lbl_status = tk.Label(
+            status_bar,
+            text="Waiting...",
+            font=("Segoe UI", 7),
+            bg=COLORS["bg"],
+            fg=COLORS["text_faint"]
+        )
         self.lbl_status.pack(side="right", padx=5)
 
-        # Кнопка переключения окна предложений
-        self.btn_toggle_sent = tk.Label(
+        # Кнопки-переключатели
+        self.btn_toggle_sent = self._create_toggle_button(
             status_bar,
-            text="Sentence",
-            font=("Segoe UI", 8),
-            bg=self.COLORS["bg_secondary"],
-            fg=self.COLORS["text_main"],
-            cursor="hand2",
-            padx=8,
-            pady=3,
-            relief="flat"
+            "Sentence",
+            self.toggle_sentence_window,
+            "ShowSentenceWindow"
         )
         self.btn_toggle_sent.pack(side="left", padx=(10, 5))
-        self.btn_toggle_sent.bind("<Button-1>", self.toggle_sentence_window)
-        self.btn_toggle_sent.bind("<Enter>", lambda e: self.btn_toggle_sent.config(
-            bg=self.COLORS["text_accent"],
-            fg=self.COLORS["bg"]
-        ))
-        self.btn_toggle_sent.bind("<Leave>", lambda e: self._update_sentence_button_style())
 
-        # Кнопка переключения автопроизношения
-        self.btn_toggle_pronounce = tk.Label(
+        self.btn_toggle_pronounce = self._create_toggle_button(
             status_bar,
-            text="Pronunciation",
+            "Pronunciation",
+            self.toggle_auto_pronounce,
+            "AutoPronounce"
+        )
+        self.btn_toggle_pronounce.pack(side="left", padx=(0, 10))
+
+    def _create_toggle_button(self, parent, text, command, config_key):
+        """Создает кнопку-переключатель с hover эффектом"""
+        btn = tk.Label(
+            parent,
+            text=text,
             font=("Segoe UI", 8),
-            bg=self.COLORS["bg_secondary"],
-            fg=self.COLORS["text_main"],
+            bg=COLORS["bg_secondary"],
+            fg=COLORS["text_main"],
             cursor="hand2",
             padx=8,
             pady=3,
             relief="flat"
         )
-        self.btn_toggle_pronounce.pack(side="left", padx=(0, 10))
-        self.btn_toggle_pronounce.bind("<Button-1>", self.toggle_auto_pronounce)
-        self.btn_toggle_pronounce.bind("<Enter>", lambda e: self.btn_toggle_pronounce.config(
-            bg=self.COLORS["text_accent"],
-            fg=self.COLORS["bg"]
-        ))
-        self.btn_toggle_pronounce.bind("<Leave>", lambda e: self._update_pronounce_button_style())
+        btn.bind("<Button-1>", command)
 
-        # Устанавливаем начальное состояние кнопок
-        self._update_sentence_button_style()
-        self._update_pronounce_button_style()
+        # Hover эффект
+        def on_enter(e):
+            btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
-    def _update_sentence_button_style(self):
-        """Обновляет стиль кнопки в зависимости от состояния окна"""
-        is_visible = cfg.get_bool("USER", "ShowSentenceWindow", True)
-        if is_visible:
-            self.btn_toggle_sent.config(
-                bg=self.COLORS["text_accent"],
-                fg=self.COLORS["bg"]
-            )
-        else:
-            self.btn_toggle_sent.config(
-                bg=self.COLORS["bg_secondary"],
-                fg=self.COLORS["text_faint"]
-            )
+        def on_leave(e):
+            self._update_toggle_button_style(btn, config_key)
 
-    def _update_pronounce_button_style(self):
-        """Обновляет стиль кнопки автопроизношения в зависимости от состояния"""
-        is_enabled = cfg.get_bool("USER", "AutoPronounce", True)
-        if is_enabled:
-            self.btn_toggle_pronounce.config(
-                bg=self.COLORS["text_accent"],
-                fg=self.COLORS["bg"]
-            )
-        else:
-            self.btn_toggle_pronounce.config(
-                bg=self.COLORS["bg_secondary"],
-                fg=self.COLORS["text_faint"]
-            )
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
 
-    def toggle_sentence_window(self, event=None):
-        current_state = cfg.get_bool("USER", "ShowSentenceWindow")
-        new_state = not current_state
-        cfg.set("USER", "ShowSentenceWindow", new_state)
-        if new_state:
-            self.sent_window.deiconify()
-        else:
-            self.sent_window.withdraw()
-        self._update_sentence_button_style()
+        # Установить начальный стиль
+        self._update_toggle_button_style(btn, config_key)
 
-    def toggle_auto_pronounce(self, event=None):
-        """Переключает автопроизношение"""
-        current_state = cfg.get_bool("USER", "AutoPronounce", True)
-        new_state = not current_state
-        cfg.set("USER", "AutoPronounce", new_state)
-        self._update_pronounce_button_style()
+        return btn
+
+    def _update_toggle_button_style(self, button, config_key):
+        """Обновляет стиль кнопки-переключателя"""
+        is_enabled = cfg.get_bool("USER", config_key, True)
+        button.config(
+            bg=COLORS["text_accent"] if is_enabled else COLORS["bg_secondary"],
+            fg=COLORS["bg"] if is_enabled else COLORS["text_faint"]
+        )
 
     def _bind_events(self):
+        """Привязка событий"""
+        # Перемещение окна
         self.bind("<Button-1>", self.start_move)
         self.bind("<B1-Motion>", self.do_move)
         self.bind("<ButtonRelease-1>", self.stop_move)
+
+        # Popup слайдера
         self.scale.bind("<ButtonPress-1>", self.show_popup)
         self.scale.bind("<B1-Motion>", self.move_popup)
         self.scale.bind("<ButtonRelease-1>", self.hide_popup_and_save)
+
+    # ===== SCROLLBAR LOGIC =====
 
     def _on_mousewheel(self, event):
         self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -312,158 +446,271 @@ class MainWindow(tk.Tk):
         self._check_scroll_needed()
 
     def _check_scroll_needed(self):
+        """Показывает/скрывает scrollbar при необходимости"""
         bbox = self.canvas_scroll.bbox("all")
-        if not bbox: return
-        if bbox[3] > self.canvas_scroll.winfo_height():
+        if bbox and bbox[3] > self.canvas_scroll.winfo_height():
             self.scrollbar.pack(side="right", fill="y")
         else:
             self.scrollbar.pack_forget()
 
+    # ===== TOOLTIP LOGIC =====
+
     def _on_text_enter(self, event, text):
-        if text in self.trans_cache:
-            self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
-            return
-        if self.hover_timer: self.after_cancel(self.hover_timer)
-        self.hover_timer = self.after(300, lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root))
+        """Обработка наведения на текст"""
+        if self.hover_timer:
+            self.after_cancel(self.hover_timer)
+        self.hover_timer = self.after(
+            300,
+            lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
+        )
 
     def _on_text_leave(self, event):
+        """Обработка ухода курсора с текста"""
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
             self.hover_timer = None
         self.tooltip.hide()
 
     def _fetch_and_show_tooltip(self, text, x, y):
+        """Загрузка и отображение тултипа"""
         if text in self.trans_cache:
             self.tooltip.show_text(self.trans_cache[text], x, y)
             return
+
         self.tooltip.show_loading(x, y)
-        threading.Thread(target=self._worker_tooltip_trans, args=(text, x, y), daemon=True).start()
+        threading.Thread(
+            target=self._worker_tooltip_trans,
+            args=(text, x, y),
+            daemon=True
+        ).start()
 
     def _worker_tooltip_trans(self, text, x, y):
+        """Worker для загрузки перевода"""
         trans = fetch_sentence_translation(text)
         if trans:
-            self.trans_cache[text] = trans  # Кэш В ПАМЯТИ для тултипов
+            self.trans_cache[text] = trans
             self.after(0, lambda: self.tooltip.update_text(trans))
 
+    # ===== SYNONYM LOGIC =====
+
     def on_synonym_click(self, word):
-        """Вызывает внешний callback для поиска слова"""
+        """Обработка клика по синониму"""
         if self.search_callback:
             self.search_callback(word)
 
+    def _on_synonym_enter(self, event, text, widget):
+        """Hover эффект для синонима"""
+        self._on_text_enter(event, text)
+        widget.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
+
+    def _on_synonym_leave(self, event, widget):
+        """Уход курсора с синонима"""
+        self._on_text_leave(event)
+        widget.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
+
+    # ===== DATA DISPLAY =====
+
     def update_full_data_ui(self, full_data):
-        for widget in self.scrollable_frame.winfo_children(): widget.destroy()
+        """Обновление UI полными данными словаря"""
+        # Очистка
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
         self.current_audio_urls = [None, None]
 
         if not full_data:
-            tk.Label(self.scrollable_frame, text="No detailed data available", font=self.FONTS["definition"],
-                     bg=self.COLORS["bg"], fg=self.COLORS["text_faint"]).pack(pady=10)
+            tk.Label(
+                self.scrollable_frame,
+                text="No detailed data available",
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_faint"]
+            ).pack(pady=10)
             self.lbl_phonetic.config(text="")
             return
 
-        phonetics = full_data.get("phonetics", [])
-        if phonetics:
-            p_text = next((p["text"] for p in phonetics if p.get("text")), "")
-            self.lbl_phonetic.config(text=p_text)
+        # Обработка фонетики и аудио
+        self._process_phonetics(full_data.get("phonetics", []))
 
-            us_url = None;
-            uk_url = None
-            for p in phonetics:
-                url = p.get("audio", "")
-                if "-us.mp3" in url:
-                    us_url = url
-                elif "-uk.mp3" in url:
-                    uk_url = url
-            if not us_url and not uk_url:
-                for p in phonetics:
-                    if p.get("audio"):
-                        if not us_url:
-                            us_url = p["audio"]
-                        elif not uk_url:
-                            uk_url = p["audio"]
-            self.current_audio_urls = [us_url, uk_url]
+        # Отображение meanings
+        self._render_meanings(full_data.get("meanings", []))
 
-            self.btn_audio_us.config(fg=self.COLORS["text_main"] if us_url else self.COLORS["text_faint"])
-            self.btn_audio_uk.config(fg=self.COLORS["text_main"] if uk_url else self.COLORS["text_faint"])
-        else:
+    def _process_phonetics(self, phonetics):
+        """Обработка фонетической информации"""
+        if not phonetics:
             self.lbl_phonetic.config(text="")
-            self.btn_audio_us.config(fg=self.COLORS["text_faint"])
-            self.btn_audio_uk.config(fg=self.COLORS["text_faint"])
+            self.btn_audio_us.config(fg=COLORS["text_faint"])
+            self.btn_audio_uk.config(fg=COLORS["text_faint"])
+            return
 
-        meanings = full_data.get("meanings", [])
+        # Извлекаем текст фонетики
+        p_text = next((p["text"] for p in phonetics if p.get("text")), "")
+        self.lbl_phonetic.config(text=p_text)
+
+        # Извлекаем URL аудио
+        us_url, uk_url = self._extract_audio_urls(phonetics)
+        self.current_audio_urls = [us_url, uk_url]
+
+        # Обновляем состояние кнопок
+        self.btn_audio_us.config(
+            fg=COLORS["text_main"] if us_url else COLORS["text_faint"]
+        )
+        self.btn_audio_uk.config(
+            fg=COLORS["text_main"] if uk_url else COLORS["text_faint"]
+        )
+
+    def _extract_audio_urls(self, phonetics):
+        """Извлекает US и UK аудио URL с приоритетом"""
+        # Ищем специфичные варианты
+        us = next((p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "")), None)
+        uk = next((p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "")), None)
+
+        # Fallback: берем первые доступные
+        if not us or not uk:
+            available = [p["audio"] for p in phonetics if p.get("audio")]
+            us = us or (available[0] if len(available) > 0 else None)
+            uk = uk or (available[1] if len(available) > 1 else None)
+
+        return us, uk
+
+    def _render_meanings(self, meanings):
+        """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
         window_width = self.winfo_width() - 60
+
         for meaning in meanings:
+            # Часть речи
             pos = meaning.get("partOfSpeech", "")
-            pos_label = tk.Label(self.scrollable_frame, text=pos, font=self.FONTS["pos"], bg=self.COLORS["bg"],
-                                 fg=self.COLORS["text_pos"], anchor="w")
-            pos_label.pack(fill="x", pady=(10, 5))
+            tk.Label(
+                self.scrollable_frame,
+                text=pos,
+                font=FONTS["pos"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_pos"],
+                anchor="w"
+            ).pack(fill="x", pady=(10, 5))
 
-            definitions = meaning.get("definitions", [])
-            for i, defn in enumerate(definitions, 1):
-                def_text = f"{i}. {defn.get('definition', '')}"
-                lbl_def = tk.Label(self.scrollable_frame, text=def_text, font=self.FONTS["definition"],
-                                   bg=self.COLORS["bg"], fg=self.COLORS["text_main"], wraplength=window_width,
-                                   justify="left", anchor="w")
-                lbl_def.pack(fill="x", padx=10, pady=2)
-                lbl_def.bind("<Enter>", lambda e, t=defn.get('definition', ''): self._on_text_enter(e, t))
-                lbl_def.bind("<Leave>", self._on_text_leave)
-                if defn.get("example"):
-                    ex_text = f'   "{defn["example"]}"'
-                    lbl_ex = tk.Label(self.scrollable_frame, text=ex_text, font=self.FONTS["example"],
-                                      bg=self.COLORS["bg"], fg=self.COLORS["text_accent"], wraplength=window_width,
-                                      justify="left", anchor="w")
-                    lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
-                    lbl_ex.bind("<Enter>", lambda e, t=defn.get("example", ""): self._on_text_enter(e, t))
-                    lbl_ex.bind("<Leave>", self._on_text_leave)
+            # Определения и примеры
+            self._render_definitions(meaning.get("definitions", []), window_width)
 
-            # --- СИНОНИМЫ (ТЕГИ) ---
-            synonyms = meaning.get("synonyms", [])
-            if synonyms:
-                syn_frame = tk.Frame(self.scrollable_frame, bg=self.COLORS["bg"])
-                syn_frame.pack(fill="x", padx=10, pady=(5, 10))
-                tk.Label(syn_frame, text="Syn:", font=("Segoe UI", 9, "bold"), bg=self.COLORS["bg"],
-                         fg=self.COLORS["text_faint"]).pack(side="left", anchor="n")
+            # Синонимы
+            self._render_synonyms(meaning.get("synonyms", []))
 
-                for syn in synonyms[:5]:
-                    # Создаем тег
-                    tag = tk.Label(syn_frame, text=syn, font=("Segoe UI", 8), bg=self.COLORS["bg_secondary"],
-                                   fg=self.COLORS["text_main"], padx=6, pady=2, cursor="hand2")
-                    tag.pack(side="left", padx=3)
+            # Разделитель
+            tk.Frame(
+                self.scrollable_frame,
+                height=1,
+                bg=COLORS["separator"],
+                width=360
+            ).pack(pady=5)
 
-                    # Ховер (цвет + тултип)
-                    tag.bind("<Enter>", lambda e, t=syn, w=tag:
-                    (self._on_text_enter(e, t), w.config(bg=self.COLORS["text_accent"], fg=self.COLORS["bg"]))[1])
-                    tag.bind("<Leave>", lambda e, w=tag:
-                    (self._on_text_leave(e), w.config(bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"]))[1])
+    def _render_definitions(self, definitions, window_width):
+        """Отрисовка определений и примеров"""
+        for i, defn in enumerate(definitions, 1):
+            # Определение
+            def_text = f"{i}. {defn.get('definition', '')}"
+            lbl_def = tk.Label(
+                self.scrollable_frame,
+                text=def_text,
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_main"],
+                wraplength=window_width,
+                justify="left",
+                anchor="w"
+            )
+            lbl_def.pack(fill="x", padx=10, pady=2)
+            lbl_def.bind(
+                "<Enter>",
+                lambda e, t=defn.get('definition', ''): self._on_text_enter(e, t)
+            )
+            lbl_def.bind("<Leave>", self._on_text_leave)
 
-                    # КЛИК -> ПОИСК
-                    tag.bind("<Button-1>", lambda e, w=syn: self.on_synonym_click(w))
+            # Пример
+            if defn.get("example"):
+                ex_text = f'   "{defn["example"]}"'
+                lbl_ex = tk.Label(
+                    self.scrollable_frame,
+                    text=ex_text,
+                    font=FONTS["example"],
+                    bg=COLORS["bg"],
+                    fg=COLORS["text_accent"],
+                    wraplength=window_width,
+                    justify="left",
+                    anchor="w"
+                )
+                lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
+                lbl_ex.bind(
+                    "<Enter>",
+                    lambda e, t=defn.get("example", ""): self._on_text_enter(e, t)
+                )
+                lbl_ex.bind("<Leave>", self._on_text_leave)
 
-            tk.Frame(self.scrollable_frame, height=1, bg=self.COLORS["separator"], width=360).pack(pady=5)
+    def _render_synonyms(self, synonyms):
+        """Отрисовка синонимов в виде тегов"""
+        if not synonyms:
+            return
 
-    def resize_window(self, dx, dy):
-        new_w = self.winfo_width() + dx;
-        new_h = self.winfo_height() + dy
-        if new_w < 300: new_w = 300
-        if new_h < 400: new_h = 400
-        self.geometry(f"{new_w}x{new_h}")
-        self.lbl_rus.config(wraplength=new_w - 20)
-        self.scrollable_frame.event_generate("<Configure>")
+        syn_frame = tk.Frame(self.scrollable_frame, bg=COLORS["bg"])
+        syn_frame.pack(fill="x", padx=10, pady=(5, 10))
 
-    def save_size(self):
-        cfg.set("USER", "WindowWidth", self.winfo_width());
-        cfg.set("USER", "WindowHeight", self.winfo_height())
+        tk.Label(
+            syn_frame,
+            text="Syn:",
+            font=("Segoe UI", 9, "bold"),
+            bg=COLORS["bg"],
+            fg=COLORS["text_faint"]
+        ).pack(side="left", anchor="n")
 
-    def play_audio(self, index: int):
+        for syn in synonyms[:5]:
+            tag = tk.Label(
+                syn_frame,
+                text=syn,
+                font=("Segoe UI", 8),
+                bg=COLORS["bg_secondary"],
+                fg=COLORS["text_main"],
+                padx=6,
+                pady=2,
+                cursor="hand2"
+            )
+            tag.pack(side="left", padx=3)
+
+            # События
+            tag.bind(
+                "<Enter>",
+                lambda e, t=syn, w=tag: self._on_synonym_enter(e, t, w)
+            )
+            tag.bind(
+                "<Leave>",
+                lambda e, w=tag: self._on_synonym_leave(e, w)
+            )
+            tag.bind(
+                "<Button-1>",
+                lambda e, w=syn: self.on_synonym_click(w)
+            )
+
+    # ===== AUDIO PLAYER =====
+
+    def play_audio(self, index):
+        """Воспроизведение аудио по индексу (0=US, 1=UK)"""
         if index < len(self.current_audio_urls):
             url = self.current_audio_urls[index]
-            if not url: return
-            threading.Thread(target=self._play_audio_worker, args=(url,), daemon=True).start()
+            if not url:
+                return
+            threading.Thread(
+                target=self._play_audio_worker,
+                args=(url,),
+                daemon=True
+            ).start()
 
-    def _play_audio_worker(self, url: str):
+    def _play_audio_worker(self, url):
+        """Worker для загрузки и воспроизведения аудио"""
         try:
             filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
-            if not filename.endswith(".mp3"): filename += ".mp3"
+            if not filename.endswith(".mp3"):
+                filename += ".mp3"
+
             file_path = os.path.join(AUDIO_DIR, filename)
+
+            # Скачиваем если нет
             if not os.path.exists(file_path):
                 resp = requests.get(url, timeout=10)
                 if resp.status_code == 200:
@@ -471,111 +718,197 @@ class MainWindow(tk.Tk):
                         f.write(resp.content)
                 else:
                     return
+
             playsound(file_path)
         except Exception as e:
             print(f"Audio Play Error: {e}")
 
-    def refresh_status(self):
-        self.lbl_status.config(text=f"Tr: {self.sources['trans']} • Img: {self.sources['img']}")
+    # ===== IMAGE HANDLER =====
 
-    def update_trans_ui(self, data, source: str):
-        if data:
-            self.lbl_rus.config(text=data["rus"]);
-            self.sources["trans"] = source
-        else:
-            self.sources["trans"] = "-";
-            self.refresh_status()
-
-    def update_img_ui(self, path, source: str):
+    def update_img_ui(self, path, source):
+        """Обновление изображения"""
         if path:
             try:
                 pil_img = Image.open(path)
-                window_width = self.winfo_width();
-                base_width = window_width - 40
-                w_percent = base_width / float(pil_img.size[0]);
-                h_size = int(float(pil_img.size[1]) * float(w_percent))
-                if h_size > 250: h_size = 250; w_percent = h_size / float(pil_img.size[1]); base_width = int(
-                    float(pil_img.size[0]) * float(w_percent))
-                try:
-                    resample = Image.Resampling.BILINEAR
-                except AttributeError:
-                    resample = Image.ANTIALIAS
-                pil_img = pil_img.resize((base_width, h_size), resample)
+
+                # Вписываем в размер окна
+                max_width = self.winfo_width() - 40
+                pil_img.thumbnail((max_width, 250), Image.Resampling.BILINEAR)
+
+                # Конвертируем для Tkinter
                 tki = ImageTk.PhotoImage(pil_img)
-                self.img_container.config(image=tki, width=base_width, height=h_size, bg=self.COLORS["bg"]);
-                self.img_container.image = tki;
+                self.img_container.config(
+                    image=tki,
+                    width=pil_img.width,
+                    height=pil_img.height,
+                    bg=COLORS["bg"]
+                )
+                self.img_container.image = tki
                 self.sources["img"] = source
             except Exception as e:
-                print(f"Img Error: {e}");
-                self.img_container.config(image="");
+                print(f"Img Error: {e}")
+                self.img_container.config(image="")
                 self.sources["img"] = "Err"
         else:
-            self.img_container.config(image="");
+            self.img_container.config(image="")
             self.sources["img"] = "No"
+
         self.refresh_status()
 
-    def reset_ui(self, word: str):
-        self.lbl_word.config(text=word);
-        self.lbl_phonetic.config(text="");
-        self.lbl_rus.config(text="Loading...");
+    # ===== STATUS =====
+
+    @property
+    def status_text(self):
+        """Генерирует текст статуса"""
+        return f"Tr: {self.sources['trans']} • Img: {self.sources['img']}"
+
+    def refresh_status(self):
+        """Обновляет строку статуса"""
+        self.lbl_status.config(text=self.status_text)
+
+    def update_trans_ui(self, data, source):
+        """Обновление перевода"""
+        if data:
+            self.lbl_rus.config(text=data["rus"])
+            self.sources["trans"] = source
+        else:
+            self.sources["trans"] = "-"
+        self.refresh_status()
+
+    def reset_ui(self, word):
+        """Сброс UI для нового слова"""
+        self.lbl_word.config(text=word)
+        self.lbl_phonetic.config(text="")
+        self.lbl_rus.config(text="Loading...")
         self.img_container.config(image="")
-        self.current_audio_urls = [None, None];
-        for widget in self.scrollable_frame.winfo_children(): widget.destroy()
-        self.sources = {"trans": "...", "img": "..."};
+        self.current_audio_urls = [None, None]
+
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
 
-    def change_level(self, delta: int):
+    # ===== WINDOW CONTROLS =====
+
+    def resize_window(self, dx, dy):
+        """Изменение размера окна"""
+        new_w = self.winfo_width() + dx
+        new_h = self.winfo_height() + dy
+
+        new_w = max(300, new_w)
+        new_h = max(400, new_h)
+
+        self.geometry(f"{new_w}x{new_h}")
+        self.lbl_rus.config(wraplength=new_w - 20)
+        self.scrollable_frame.event_generate("<Configure>")
+
+    def save_size(self):
+        """Сохранение размера окна"""
+        cfg.set("USER", "WindowWidth", self.winfo_width())
+        cfg.set("USER", "WindowHeight", self.winfo_height())
+
+    def toggle_sentence_window(self, event=None):
+        """Переключение окна предложений"""
+        current_state = cfg.get_bool("USER", "ShowSentenceWindow")
+        new_state = not current_state
+        cfg.set("USER", "ShowSentenceWindow", new_state)
+
+        if new_state:
+            self.sent_window.deiconify()
+        else:
+            self.sent_window.withdraw()
+
+        self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
+
+    def toggle_auto_pronounce(self, event=None):
+        """Переключение автопроизношения"""
+        current_state = cfg.get_bool("USER", "AutoPronounce", True)
+        new_state = not current_state
+        cfg.set("USER", "AutoPronounce", new_state)
+        self._update_toggle_button_style(self.btn_toggle_pronounce, "AutoPronounce")
+
+    # ===== VOCAB SLIDER =====
+
+    def change_level(self, delta):
+        """Изменение уровня словаря"""
         new_val = self.vocab_var.get() + delta
-        if 0 <= new_val <= 100: self.vocab_var.set(new_val); self.lbl_lvl_val.config(
-            text=str(new_val)); self.save_level()
+        if 0 <= new_val <= 100:
+            self.vocab_var.set(new_val)
+            self.lbl_lvl_val.config(text=str(new_val))
+            self.save_level()
+
+    def save_level(self, event=None):
+        """Сохранение уровня"""
+        cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
     def show_popup(self, event):
+        """Показать popup с ignored words"""
         self.dragging_allowed = False
         if not self.popup:
-            self.popup = VocabPopup(self);
-            x = self.winfo_x() + self.winfo_width() + 10;
-            y = self.winfo_y();
+            self.popup = VocabPopup(self)
+            x = self.winfo_x() + self.winfo_width() + 10
+            y = self.winfo_y()
             self.popup.geometry(f"220x550+{x}+{y}")
         self.update_popup_content()
 
     def move_popup(self, event):
-        self.lbl_lvl_val.config(text=str(self.vocab_var.get()));
+        """Обновление popup при движении слайдера"""
+        self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
         self.update_popup_content()
 
     def update_popup_content(self):
-        if self.popup: self.popup.update_words(self.vocab_var.get())
+        """Обновление содержимого popup"""
+        if self.popup:
+            self.popup.update_words(self.vocab_var.get())
 
     def hide_popup_and_save(self, event):
-        if self.popup: self.popup.destroy(); self.popup = None
-        self.save_level();
-        self.dragging_allowed = False
+        """Скрытие popup и сохранение"""
+        if self.popup:
+            self.popup.destroy()
+            self.popup = None
+        self.save_level()
 
-    def save_level(self, event=None):
-        cfg.set("USER", "VocabLevel", self.vocab_var.get())
+    # ===== WINDOW DRAGGING =====
 
     def start_move(self, event):
+        """Начало перемещения окна"""
         widget = event.widget
-        if isinstance(widget, (tk.Button, tk.Scale, tk.Scrollbar, tk.Entry)): self.dragging_allowed = False; return
-        if widget == self.grip: self.dragging_allowed = False; return
+
+        # Запрещаем драг для интерактивных элементов
+        no_drag = (tk.Button, tk.Scale, tk.Scrollbar, tk.Entry)
+        if isinstance(widget, no_drag) or widget == self.grip:
+            return
+
+        # Проверяем cursor (кнопки)
         try:
-            if widget.cget("cursor") == "hand2": self.dragging_allowed = False; return
+            if widget.cget("cursor") == "hand2":
+                return
         except:
             pass
-        self.dragging_allowed = True;
-        self.x = event.x;
+
+        self.dragging_allowed = True
+        self.x = event.x
         self.y = event.y
 
     def do_move(self, event):
-        if not self.dragging_allowed: return
-        new_x = self.winfo_x() + (event.x - self.x);
+        """Перемещение окна"""
+        if not self.dragging_allowed:
+            return
+
+        new_x = self.winfo_x() + (event.x - self.x)
         new_y = self.winfo_y() + (event.y - self.y)
         self.geometry(f"+{new_x}+{new_y}")
 
     def stop_move(self, event):
-        if self.dragging_allowed: cfg.set("USER", "WindowX", self.winfo_x()); cfg.set("USER", "WindowY", self.winfo_y())
+        """Завершение перемещения"""
+        if self.dragging_allowed:
+            cfg.set("USER", "WindowX", self.winfo_x())
+            cfg.set("USER", "WindowY", self.winfo_y())
         self.dragging_allowed = False
 
     def close_app(self):
-        keyboard.unhook_all();
-        self.destroy();
+        """Закрытие приложения"""
+        keyboard.unhook_all()
+        self.destroy()
         sys.exit(0)
