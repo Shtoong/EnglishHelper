@@ -5,6 +5,7 @@ import sys
 import os
 import threading
 import requests
+from typing import Dict, List, Optional, Tuple, Callable
 
 from playsound import playsound
 
@@ -120,6 +121,16 @@ class TranslationTooltip:
 
 
 class MainWindow(tk.Tk):
+    # ===== UI КОНСТАНТЫ =====
+    IMAGE_MAX_HEIGHT = 250
+    IMAGE_PADDING = 40
+    CONTENT_PADDING = 60
+    DEFAULT_WRAPLENGTH = 380
+    MAX_SYNONYMS = 5
+    HOVER_DELAY_MS = 300
+    MIN_WINDOW_WIDTH = 300
+    MIN_WINDOW_HEIGHT = 400
+
     def __init__(self):
         super().__init__()
 
@@ -150,6 +161,11 @@ class MainWindow(tk.Tk):
         self._init_ui()
         self._bind_events()
 
+    @property
+    def content_width(self) -> int:
+        """Ширина области контента с учетом padding"""
+        return self.winfo_width() - self.CONTENT_PADDING
+
     def _init_ui(self):
         """Инициализация всех UI элементов"""
         self._create_top_bar()
@@ -161,30 +177,40 @@ class MainWindow(tk.Tk):
         self._create_vocab_slider()
         self._create_status_bar()
 
+    def _create_label(self, parent, text: str = "", font_key: str = "definition",
+                      fg_key: str = "text_main", **kwargs) -> tk.Label:
+        """Фабрика для создания стилизованных Label с дефолтными стилями"""
+        defaults = {
+            "font": FONTS[font_key],
+            "bg": COLORS["bg"],
+            "fg": COLORS[fg_key]
+        }
+        defaults.update(kwargs)
+        return tk.Label(parent, text=text, **defaults)
+
     def _create_top_bar(self):
         """Верхняя панель с кнопкой закрытия"""
         top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
         top_bar.pack(fill="x", pady=(5, 0))
 
-        btn_close = tk.Label(
+        btn_close = self._create_label(
             top_bar,
             text="✕",
-            font=("Arial", 12),
-            bg=COLORS["bg"],
-            fg=COLORS["close_btn"],
+            font_key="header",
+            fg_key="close_btn",
             cursor="hand2"
         )
+        btn_close.config(font=("Arial", 12))
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
     def _create_word_header(self):
         """Заголовок слова с фонетикой и аудио"""
-        self.lbl_word = tk.Label(
+        self.lbl_word = self._create_label(
             self,
             text="English Helper",
-            font=FONTS["header"],
-            bg=COLORS["bg"],
-            fg=COLORS["text_header"]
+            font_key="header",
+            fg_key="text_header"
         )
         self.lbl_word.pack(pady=(10, 5), anchor="center")
 
@@ -192,19 +218,17 @@ class MainWindow(tk.Tk):
         phonetic_frame = tk.Frame(self, bg=COLORS["bg"])
         phonetic_frame.pack(anchor="center", pady=5)
 
-        self.lbl_phonetic = tk.Label(
+        self.lbl_phonetic = self._create_label(
             phonetic_frame,
-            text="",
-            font=FONTS["phonetic"],
-            bg=COLORS["bg"],
-            fg=COLORS["text_phonetic"]
+            font_key="phonetic",
+            fg_key="text_phonetic"
         )
         self.lbl_phonetic.pack(side="left", padx=5)
 
         self.btn_audio_us = self._create_audio_button(phonetic_frame, "🔊 US", 0)
         self.btn_audio_uk = self._create_audio_button(phonetic_frame, "🔊 UK", 1)
 
-    def _create_audio_button(self, parent, text, index):
+    def _create_audio_button(self, parent, text: str, index: int) -> tk.Label:
         """Создает кнопку воспроизведения аудио"""
         btn = tk.Label(
             parent,
@@ -222,15 +246,14 @@ class MainWindow(tk.Tk):
 
     def _create_translation_display(self):
         """Область отображения перевода"""
-        self.lbl_rus = tk.Label(
+        self.lbl_rus = self._create_label(
             self,
             text="Ready",
-            font=("Segoe UI", 33),
-            bg=COLORS["bg"],
-            fg=COLORS["text_accent"],
-            wraplength=380,
+            fg_key="text_accent",
+            wraplength=self.DEFAULT_WRAPLENGTH,
             justify="center"
         )
+        self.lbl_rus.config(font=("Segoe UI", 33))
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
 
     def _create_image_container(self):
@@ -280,25 +303,23 @@ class MainWindow(tk.Tk):
         slider_area = tk.Frame(self.bottom_frame, bg=COLORS["bg"])
         slider_area.pack(side="top", fill="x", padx=10, pady=(5, 0))
 
-        tk.Label(
+        self._create_label(
             slider_area,
             text="Vocab:",
-            font=FONTS["ui"],
-            bg=COLORS["bg"],
-            fg=COLORS["text_faint"]
+            font_key="ui",
+            fg_key="text_faint"
         ).pack(side="left")
 
         self.vocab_var = tk.IntVar(value=int(cfg.get("USER", "VocabLevel")))
 
         # Кнопки управления
-        btn_minus = tk.Label(
+        btn_minus = self._create_label(
             slider_area,
             text="<",
-            font=("Consolas", 12, "bold"),
-            bg=COLORS["bg"],
-            fg=COLORS["text_accent"],
+            fg_key="text_accent",
             cursor="hand2"
         )
+        btn_minus.config(font=("Consolas", 12, "bold"))
         btn_minus.pack(side="left", padx=2)
         btn_minus.bind("<Button-1>", lambda e: self.change_level(-1))
 
@@ -319,25 +340,23 @@ class MainWindow(tk.Tk):
         )
         self.scale.pack(side="left", padx=2, fill="x", expand=True)
 
-        btn_plus = tk.Label(
+        btn_plus = self._create_label(
             slider_area,
             text=">",
-            font=("Consolas", 12, "bold"),
-            bg=COLORS["bg"],
-            fg=COLORS["text_accent"],
+            fg_key="text_accent",
             cursor="hand2"
         )
+        btn_plus.config(font=("Consolas", 12, "bold"))
         btn_plus.pack(side="left", padx=2)
         btn_plus.bind("<Button-1>", lambda e: self.change_level(1))
 
         # Отображение значения
-        self.lbl_lvl_val = tk.Label(
+        self.lbl_lvl_val = self._create_label(
             slider_area,
             text=str(self.vocab_var.get()),
-            font=("Segoe UI", 9, "bold"),
-            bg=COLORS["bg"],
-            fg=COLORS["text_header"]
+            fg_key="text_header"
         )
+        self.lbl_lvl_val.config(font=("Segoe UI", 9, "bold"))
         self.lbl_lvl_val.pack(side="left", padx=(5, 0))
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
@@ -383,7 +402,7 @@ class MainWindow(tk.Tk):
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 10))
 
-    def _create_toggle_button(self, parent, text, command, config_key):
+    def _create_toggle_button(self, parent, text: str, command: Callable, config_key: str) -> tk.Label:
         """Создает кнопку-переключатель с hover эффектом"""
         btn = tk.Label(
             parent,
@@ -413,7 +432,7 @@ class MainWindow(tk.Tk):
 
         return btn
 
-    def _update_toggle_button_style(self, button, config_key):
+    def _update_toggle_button_style(self, button: tk.Label, config_key: str):
         """Обновляет стиль кнопки-переключателя"""
         is_enabled = cfg.get_bool("USER", config_key, True)
         button.config(
@@ -455,12 +474,23 @@ class MainWindow(tk.Tk):
 
     # ===== TOOLTIP LOGIC =====
 
-    def _on_text_enter(self, event, text):
+    def _bind_hover_translation(self, widget: tk.Widget, text: str):
+        """Универсальный биндинг hover-перевода для любого виджета"""
+        widget.bind("<Enter>", lambda e: self._on_text_enter(e, text))
+        widget.bind("<Leave>", self._on_text_leave)
+
+    def _on_text_enter(self, event, text: str):
         """Обработка наведения на текст"""
+        # Показываем сразу если есть в кэше
+        if text in self.trans_cache:
+            self.tooltip.show_text(self.trans_cache[text], event.x_root, event.y_root)
+            return
+
+        # Иначе показываем с задержкой
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
         self.hover_timer = self.after(
-            300,
+            self.HOVER_DELAY_MS,
             lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
         )
 
@@ -471,12 +501,8 @@ class MainWindow(tk.Tk):
             self.hover_timer = None
         self.tooltip.hide()
 
-    def _fetch_and_show_tooltip(self, text, x, y):
+    def _fetch_and_show_tooltip(self, text: str, x: int, y: int):
         """Загрузка и отображение тултипа"""
-        if text in self.trans_cache:
-            self.tooltip.show_text(self.trans_cache[text], x, y)
-            return
-
         self.tooltip.show_loading(x, y)
         threading.Thread(
             target=self._worker_tooltip_trans,
@@ -484,7 +510,7 @@ class MainWindow(tk.Tk):
             daemon=True
         ).start()
 
-    def _worker_tooltip_trans(self, text, x, y):
+    def _worker_tooltip_trans(self, text: str, x: int, y: int):
         """Worker для загрузки перевода"""
         trans = fetch_sentence_translation(text)
         if trans:
@@ -493,24 +519,24 @@ class MainWindow(tk.Tk):
 
     # ===== SYNONYM LOGIC =====
 
-    def on_synonym_click(self, word):
+    def on_synonym_click(self, word: str):
         """Обработка клика по синониму"""
         if self.search_callback:
             self.search_callback(word)
 
-    def _on_synonym_enter(self, event, text, widget):
+    def _on_synonym_enter(self, event, text: str, widget: tk.Label):
         """Hover эффект для синонима"""
         self._on_text_enter(event, text)
         widget.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
-    def _on_synonym_leave(self, event, widget):
+    def _on_synonym_leave(self, event, widget: tk.Label):
         """Уход курсора с синонима"""
         self._on_text_leave(event)
         widget.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
     # ===== DATA DISPLAY =====
 
-    def update_full_data_ui(self, full_data):
+    def update_full_data_ui(self, full_data: Optional[Dict]):
         """Обновление UI полными данными словаря"""
         # Очистка
         for widget in self.scrollable_frame.winfo_children():
@@ -518,12 +544,10 @@ class MainWindow(tk.Tk):
         self.current_audio_urls = [None, None]
 
         if not full_data:
-            tk.Label(
+            self._create_label(
                 self.scrollable_frame,
                 text="No detailed data available",
-                font=FONTS["definition"],
-                bg=COLORS["bg"],
-                fg=COLORS["text_faint"]
+                fg_key="text_faint"
             ).pack(pady=10)
             self.lbl_phonetic.config(text="")
             return
@@ -534,7 +558,7 @@ class MainWindow(tk.Tk):
         # Отображение meanings
         self._render_meanings(full_data.get("meanings", []))
 
-    def _process_phonetics(self, phonetics):
+    def _process_phonetics(self, phonetics: List[Dict]):
         """Обработка фонетической информации"""
         if not phonetics:
             self.lbl_phonetic.config(text="")
@@ -558,7 +582,7 @@ class MainWindow(tk.Tk):
             fg=COLORS["text_main"] if uk_url else COLORS["text_faint"]
         )
 
-    def _extract_audio_urls(self, phonetics):
+    def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
         """Извлекает US и UK аудио URL с приоритетом"""
         # Ищем специфичные варианты
         us = next((p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "")), None)
@@ -572,24 +596,21 @@ class MainWindow(tk.Tk):
 
         return us, uk
 
-    def _render_meanings(self, meanings):
+    def _render_meanings(self, meanings: List[Dict]):
         """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
-        window_width = self.winfo_width() - 60
-
         for meaning in meanings:
             # Часть речи
             pos = meaning.get("partOfSpeech", "")
-            tk.Label(
+            self._create_label(
                 self.scrollable_frame,
                 text=pos,
-                font=FONTS["pos"],
-                bg=COLORS["bg"],
-                fg=COLORS["text_pos"],
+                font_key="pos",
+                fg_key="text_pos",
                 anchor="w"
             ).pack(fill="x", pady=(10, 5))
 
             # Определения и примеры
-            self._render_definitions(meaning.get("definitions", []), window_width)
+            self._render_definitions(meaning.get("definitions", []))
 
             # Синонимы
             self._render_synonyms(meaning.get("synonyms", []))
@@ -602,49 +623,37 @@ class MainWindow(tk.Tk):
                 width=360
             ).pack(pady=5)
 
-    def _render_definitions(self, definitions, window_width):
+    def _render_definitions(self, definitions: List[Dict]):
         """Отрисовка определений и примеров"""
         for i, defn in enumerate(definitions, 1):
             # Определение
             def_text = f"{i}. {defn.get('definition', '')}"
-            lbl_def = tk.Label(
+            lbl_def = self._create_label(
                 self.scrollable_frame,
                 text=def_text,
-                font=FONTS["definition"],
-                bg=COLORS["bg"],
-                fg=COLORS["text_main"],
-                wraplength=window_width,
+                wraplength=self.content_width,
                 justify="left",
                 anchor="w"
             )
             lbl_def.pack(fill="x", padx=10, pady=2)
-            lbl_def.bind(
-                "<Enter>",
-                lambda e, t=defn.get('definition', ''): self._on_text_enter(e, t)
-            )
-            lbl_def.bind("<Leave>", self._on_text_leave)
+            self._bind_hover_translation(lbl_def, defn.get('definition', ''))
 
             # Пример
             if defn.get("example"):
                 ex_text = f'   "{defn["example"]}"'
-                lbl_ex = tk.Label(
+                lbl_ex = self._create_label(
                     self.scrollable_frame,
                     text=ex_text,
-                    font=FONTS["example"],
-                    bg=COLORS["bg"],
-                    fg=COLORS["text_accent"],
-                    wraplength=window_width,
+                    font_key="example",
+                    fg_key="text_accent",
+                    wraplength=self.content_width,
                     justify="left",
                     anchor="w"
                 )
                 lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
-                lbl_ex.bind(
-                    "<Enter>",
-                    lambda e, t=defn.get("example", ""): self._on_text_enter(e, t)
-                )
-                lbl_ex.bind("<Leave>", self._on_text_leave)
+                self._bind_hover_translation(lbl_ex, defn.get("example", ""))
 
-    def _render_synonyms(self, synonyms):
+    def _render_synonyms(self, synonyms: List[str]):
         """Отрисовка синонимов в виде тегов"""
         if not synonyms:
             return
@@ -660,7 +669,7 @@ class MainWindow(tk.Tk):
             fg=COLORS["text_faint"]
         ).pack(side="left", anchor="n")
 
-        for syn in synonyms[:5]:
+        for syn in synonyms[:self.MAX_SYNONYMS]:
             tag = tk.Label(
                 syn_frame,
                 text=syn,
@@ -689,7 +698,7 @@ class MainWindow(tk.Tk):
 
     # ===== AUDIO PLAYER =====
 
-    def play_audio(self, index):
+    def play_audio(self, index: int):
         """Воспроизведение аудио по индексу (0=US, 1=UK)"""
         if index < len(self.current_audio_urls):
             url = self.current_audio_urls[index]
@@ -701,7 +710,7 @@ class MainWindow(tk.Tk):
                 daemon=True
             ).start()
 
-    def _play_audio_worker(self, url):
+    def _play_audio_worker(self, url: str):
         """Worker для загрузки и воспроизведения аудио"""
         try:
             filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
@@ -725,15 +734,15 @@ class MainWindow(tk.Tk):
 
     # ===== IMAGE HANDLER =====
 
-    def update_img_ui(self, path, source):
+    def update_img_ui(self, path: Optional[str], source: str):
         """Обновление изображения"""
         if path:
             try:
                 pil_img = Image.open(path)
 
                 # Вписываем в размер окна
-                max_width = self.winfo_width() - 40
-                pil_img.thumbnail((max_width, 250), Image.Resampling.BILINEAR)
+                max_width = self.winfo_width() - self.IMAGE_PADDING
+                pil_img.thumbnail((max_width, self.IMAGE_MAX_HEIGHT), Image.Resampling.BILINEAR)
 
                 # Конвертируем для Tkinter
                 tki = ImageTk.PhotoImage(pil_img)
@@ -758,7 +767,7 @@ class MainWindow(tk.Tk):
     # ===== STATUS =====
 
     @property
-    def status_text(self):
+    def status_text(self) -> str:
         """Генерирует текст статуса"""
         return f"Tr: {self.sources['trans']} • Img: {self.sources['img']}"
 
@@ -766,7 +775,7 @@ class MainWindow(tk.Tk):
         """Обновляет строку статуса"""
         self.lbl_status.config(text=self.status_text)
 
-    def update_trans_ui(self, data, source):
+    def update_trans_ui(self, data: Optional[Dict], source: str):
         """Обновление перевода"""
         if data:
             self.lbl_rus.config(text=data["rus"])
@@ -775,7 +784,7 @@ class MainWindow(tk.Tk):
             self.sources["trans"] = "-"
         self.refresh_status()
 
-    def reset_ui(self, word):
+    def reset_ui(self, word: str):
         """Сброс UI для нового слова"""
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
@@ -791,13 +800,13 @@ class MainWindow(tk.Tk):
 
     # ===== WINDOW CONTROLS =====
 
-    def resize_window(self, dx, dy):
+    def resize_window(self, dx: int, dy: int):
         """Изменение размера окна"""
         new_w = self.winfo_width() + dx
         new_h = self.winfo_height() + dy
 
-        new_w = max(300, new_w)
-        new_h = max(400, new_h)
+        new_w = max(self.MIN_WINDOW_WIDTH, new_w)
+        new_h = max(self.MIN_WINDOW_HEIGHT, new_h)
 
         self.geometry(f"{new_w}x{new_h}")
         self.lbl_rus.config(wraplength=new_w - 20)
@@ -808,29 +817,37 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "WindowWidth", self.winfo_width())
         cfg.set("USER", "WindowHeight", self.winfo_height())
 
+    def _toggle_setting(self, config_key: str, button: tk.Label,
+                        on_enable: Optional[Callable] = None,
+                        on_disable: Optional[Callable] = None):
+        """Универсальный toggle для любой настройки"""
+        current = cfg.get_bool("USER", config_key, True)
+        new_state = not current
+        cfg.set("USER", config_key, new_state)
+
+        if new_state and on_enable:
+            on_enable()
+        elif not new_state and on_disable:
+            on_disable()
+
+        self._update_toggle_button_style(button, config_key)
+
     def toggle_sentence_window(self, event=None):
         """Переключение окна предложений"""
-        current_state = cfg.get_bool("USER", "ShowSentenceWindow")
-        new_state = not current_state
-        cfg.set("USER", "ShowSentenceWindow", new_state)
-
-        if new_state:
-            self.sent_window.deiconify()
-        else:
-            self.sent_window.withdraw()
-
-        self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
+        self._toggle_setting(
+            "ShowSentenceWindow",
+            self.btn_toggle_sent,
+            on_enable=self.sent_window.deiconify,
+            on_disable=self.sent_window.withdraw
+        )
 
     def toggle_auto_pronounce(self, event=None):
         """Переключение автопроизношения"""
-        current_state = cfg.get_bool("USER", "AutoPronounce", True)
-        new_state = not current_state
-        cfg.set("USER", "AutoPronounce", new_state)
-        self._update_toggle_button_style(self.btn_toggle_pronounce, "AutoPronounce")
+        self._toggle_setting("AutoPronounce", self.btn_toggle_pronounce)
 
     # ===== VOCAB SLIDER =====
 
-    def change_level(self, delta):
+    def change_level(self, delta: int):
         """Изменение уровня словаря"""
         new_val = self.vocab_var.get() + delta
         if 0 <= new_val <= 100:
@@ -838,7 +855,7 @@ class MainWindow(tk.Tk):
             self.lbl_lvl_val.config(text=str(new_val))
             self.save_level()
 
-    def save_level(self, event=None):
+    def save_level(self):
         """Сохранение уровня"""
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
