@@ -1,231 +1,246 @@
-import os
 import requests
-import json
-import urllib3
-import threading
-from config import cfg, IMG_DIR, DICT_DIR
+import os
+import hashlib
+from PIL import Image
+from io import BytesIO
+from config import cfg
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Глобальная сессия для переиспользования соединений (УСКОРЕНИЕ TCP/SSL)
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
+# Глобальный кэш переводов предложений
+SENTENCE_CACHE = {}
 
 
-# --- PRIVATE HELPERS ---
+def get_cache_path(word):
+    """Возвращает путь к кэшированному файлу данных слова"""
+    safe_word = "".join(c for c in word if c.isalnum())
+    return os.path.join("Data", "Cache", f"{safe_word}.json")
 
-def _get_cache_path(word):
-    return os.path.join(DICT_DIR, f"{word}_full.json")
-
-
-def _load_cache(word):
-    path = _get_cache_path(word)
-    if not os.path.exists(path): return {}
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except:
-        return {}
-
-
-def _save_cache(word, data):
-    path = _get_cache_path(word)
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[Cache] Error saving: {e}")
-
-
-def _update_cache_key(word, key, value):
-    data = _load_cache(word)
-    data[key] = value
-    _save_cache(word, data)
-
-
-# --- PUBLIC API ---
 
 def check_cache_only(word):
-    """Быстрая проверка ТОЛЬКО кэша (без сети)."""
-    cache = _load_cache(word)
-    if cache.get('russian'):
-        return {"rus": cache['russian'], "trans": cache.get('trans_simple', ''), "cached": True}
+    """Проверяет наличие перевода только в кэше"""
+    import json
+    path = get_cache_path(word)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Возвращаем структуру, совместимую с UI
+            return {
+                "rus": data.get("rus", ""),
+                "cached": True
+            }
+        except:
+            pass
+    return None
+
+
+def load_full_dictionary_data(word):
+    """Загружает полные данные словаря из кэша, если есть"""
+    import json
+    path = get_cache_path(word)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+
+def save_full_dictionary_data(word, data):
+    """Сохраняет полные данные словаря в кэш"""
+    import json
+    os.makedirs(os.path.join("Data", "Cache"), exist_ok=True)
+    path = get_cache_path(word)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Cache Save Error: {e}")
+
+
+def fetch_full_dictionary_data(word):
+    """
+    Получает полные данные о слове (определения, фонетика)
+    из Free Dictionary API.
+    """
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data_list = resp.json()
+            if data_list and isinstance(data_list, list):
+                # Берем первый результат
+                full_data = data_list[0]
+
+                # Пытаемся найти русский перевод через Yandex, чтобы дополнить данные
+                rus_trans = fetch_yandex_translation(word)
+                if rus_trans:
+                    full_data["rus"] = rus_trans
+
+                save_full_dictionary_data(word, full_data)
+                return full_data
+    except Exception as e:
+        print(f"Dict API Error: {e}")
+
+    # Если API не сработало, проверяем, есть ли уже кэш
+    return load_full_dictionary_data(word)
+
+
+def fetch_yandex_translation(word):
+    """Запрос перевода слова через Yandex Dictionary API"""
+    key = cfg.get("API", "YandexKey")
+    if not key: return None
+
+    url = f"https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key={key}&lang=en-ru&text={word}"
+    try:
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if "def" in data and data["def"]:
+                translations = []
+                for definition in data["def"]:
+                    for tr in definition.get("tr", []):
+                        translations.append(tr["text"])
+                return ", ".join(translations[:3])
+    except Exception as e:
+        print(f"Yandex API Error: {e}")
     return None
 
 
 def fetch_word_translation(word):
-    cached = check_cache_only(word)
-    if cached: return cached
+    """
+    Получает перевод слова.
+    Сначала ищет в кэше полных данных.
+    Если нет - пытается получить через API.
+    """
+    # 1. Пробуем загрузить из кэша полных данных
+    full_data = load_full_dictionary_data(word)
+    if full_data and "rus" in full_data:
+        return {"rus": full_data["rus"], "cached": True}
 
-    key = cfg.get("API", "YandexKey")
-    if not key: return {"trans": "", "rus": "No API Key", "cached": False}
+    # 2. Если нет, запрашиваем полные данные (они внутри запросят Яндекс)
+    full_data = fetch_full_dictionary_data(word)
+    if full_data and "rus" in full_data:
+        return {"rus": full_data["rus"], "cached": False}
 
-    try:
-        url = "https://dictionary.yandex.net/api/v1/dicservice.json/lookup"
-        params = {"key": key, "lang": "en-ru", "text": word, "ui": "ru"}
-        resp = SESSION.get(url, params=params, timeout=2).json()
-
-        if resp.get('def'):
-            art = resp['def'][0]
-            rus_text = art['tr'][0].get('text', '') if art.get('tr') else ""
-            trans_text = art.get('ts', '')
-
-            if rus_text:
-                data = _load_cache(word)
-                data['russian'] = rus_text;
-                data['trans_simple'] = trans_text
-                _save_cache(word, data)
-                return {"rus": rus_text, "trans": trans_text, "cached": False}
-    except:
-        pass
+    # 3. Если совсем ничего нет
     return None
 
 
-def fetch_full_dictionary_data(word):
-    cache = _load_cache(word)
-    if cache.get('details') and len(cache['details']) > 0: return
+def download_image(url):
+    """Скачивает и сохраняет изображение во временный файл"""
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            img_dir = os.path.join("Data", "Images")
+            os.makedirs(img_dir, exist_ok=True)
 
-    variants = [word]
-    if not word[0].isupper():
-        variants.append(word.title())
+            # Генерируем имя файла из URL
+            ext = url.split(".")[-1].split("?")[0]
+            if len(ext) > 4 or not ext: ext = "jpg"
+            filename = f"{hashlib.md5(url.encode()).hexdigest()}.{ext}"
+            path = os.path.join(img_dir, filename)
 
-    found = False
-
-    for variant in variants:
-        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{variant}"
-        try:
-            response = SESSION.get(url, timeout=5)
-            if response.status_code == 200:
-                _update_cache_key(word, 'details', response.json())
-                found = True
-                break
-        except:
-            pass
-
-    if not found:
-        _update_cache_key(word, 'details', [])
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            return path
+    except Exception as e:
+        print(f"Download Error: {e}")
+    return None
 
 
-def load_full_dictionary_data(word):
-    cache = _load_cache(word)
-    details = cache.get('details')
+def fetch_pexels_image(word):
+    """Поиск изображения в Pexels"""
+    key = cfg.get("API", "PexelsKey")
+    if not key: return None
 
-    if details is not None and len(details) == 0: return None
-    if not details or not isinstance(details, list): return None
+    url = f"https://api.pexels.com/v1/search?query={word}&per_page=1"
+    headers = {"Authorization": key}
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("photos"):
+                img_url = data["photos"][0]["src"]["medium"]
+                return download_image(img_url)
+    except Exception as e:
+        print(f"Pexels Error: {e}")
+    return None
+
+
+def fetch_wiki_image(word):
+    """Поиск изображения в Wikipedia с фильтрацией логотипов"""
+    url = f"https://en.wikipedia.org/w/api.php?action=query&titles={word}&prop=pageimages&format=json&pithumbsize=500"
+
+    # Список имен файлов, которые часто являются логотипами или иконками
+    BLACKLIST = [
+        "Commons-logo", "Disambig", "Ambox", "Wiki_letter",
+        "Question_book", "Folder", "Decrease", "Increase",
+        "Edit-clear", "Symbol", "Icon"
+    ]
 
     try:
-        combined_phonetics = []
-        combined_meanings = []
-        base_word = details[0].get('word', word)
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            pages = data.get("query", {}).get("pages", {})
+            for page_id in pages:
+                page = pages[page_id]
+                if "thumbnail" in page:
+                    img_url = page["thumbnail"]["source"]
 
-        for entry in details:
-            for p in entry.get('phonetics', []):
-                combined_phonetics.append(
-                    {'text': p.get('text', ''), 'audio': p.get('audio', ''), 'sourceUrl': p.get('sourceUrl', '')})
-            for m in entry.get('meanings', []):
-                part_of_speech = m.get('partOfSpeech', '')
-                definitions = []
-                for d in m.get('definitions', [])[:3]:
-                    definitions.append({'definition': d.get('definition', ''), 'example': d.get('example', '')})
-                synonyms = m.get('synonyms', [])[:5]
-                combined_meanings.append(
-                    {'partOfSpeech': part_of_speech, 'definitions': definitions, 'synonyms': synonyms})
-        return {'word': base_word, 'phonetics': combined_phonetics, 'meanings': combined_meanings}
-    except:
-        return None
+                    # Проверяем URL на наличие мусорных слов
+                    if any(bad in img_url for bad in BLACKLIST):
+                        continue
 
+                    return download_image(img_url)
+    except Exception as e:
+        print(f"Wiki Error: {e}")
+    return None
 
-# --- SMART IMAGE LOGIC ---
 
 def fetch_image(word):
-    local_path = os.path.join(IMG_DIR, f"{word.lower()}.jpg")
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        return local_path, "Cache"
+    """
+    Главная функция поиска изображения.
+    Приоритет: Pexels -> Wikipedia
+    """
+    # 1. Сначала Pexels (лучшее качество для людей/природы)
+    path = fetch_pexels_image(word)
+    if path: return path, "Pexels"
 
-    variants = [word, word.upper(), word.title()]
-    variants = list(dict.fromkeys(variants))
+    # 2. Затем Википедия (для терминов, знаменитостей)
+    path = fetch_wiki_image(word)
+    if path: return path, "Wiki"
 
-    wiki_url = "https://en.wikipedia.org/w/api.php"
-
-    for variant in variants:
-        try:
-            params = {
-                "action": "query", "format": "json", "prop": "pageimages",
-                "titles": variant, "pithumbsize": 600, "redirects": 1
-            }
-            resp = SESSION.get(wiki_url, params=params, timeout=2)
-            if resp.status_code == 200:
-                data = resp.json()
-                pages = data.get("query", {}).get("pages", {})
-                for page_id, page_data in pages.items():
-                    if page_id != "-1" and "thumbnail" in page_data:
-                        img_url = page_data["thumbnail"]["source"]
-                        img_resp = SESSION.get(img_url, timeout=5)
-                        if img_resp.status_code == 200:
-                            with open(local_path, 'wb') as f:
-                                f.write(img_resp.content)
-                            return local_path, "Wiki"
-        except:
-            pass
-
-    return fetch_image_from_pexels(word, local_path)
-
-
-def fetch_image_from_pexels(word, local_path):
-    key = cfg.get("API", "PexelsKey")
-    if not key: return None, "No Key"
-
-    try:
-        headers = SESSION.headers.copy()
-        headers["Authorization"] = key
-        resp = SESSION.get(f"https://api.pexels.com/v1/search?query={word}&per_page=1", headers=headers,
-                           timeout=4).json()
-        if resp.get('photos'):
-            img_url = resp['photos'][0]['src']['medium']
-            img_resp = SESSION.get(img_url, headers=SESSION.headers, timeout=5)
-            if img_resp.status_code == 200:
-                with open(local_path, 'wb') as f:
-                    f.write(img_resp.content)
-                return local_path, "Pexels"
-    except:
-        pass
     return None, "None"
 
 
 def fetch_sentence_translation(text):
-    if not text or len(text.strip()) < 2: return "..."
+    """Перевод предложения через Google Translate (unofficial)"""
+    text = text.strip()
+    if not text: return ""
+
+    if text in SENTENCE_CACHE:
+        return SENTENCE_CACHE[text]
+
     try:
+        # Используем публичный API Google Translate
         url = "https://translate.googleapis.com/translate_a/single"
-        params = {"client": "gtx", "sl": "en", "tl": "ru", "dt": "t", "q": text}
-        resp = SESSION.get(url, params=params, timeout=3)
+        params = {
+            "client": "gtx",
+            "sl": "en",
+            "tl": "ru",
+            "dt": "t",
+            "q": text
+        }
+        resp = requests.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            res = ""
-            for part in data[0]:
-                if part[0]: res += part[0]
-            return res
-    except:
-        return "Error"
-    return "..."
+            # Собираем перевод из частей
+            translated_text = "".join([item[0] for item in data[0] if item[0]])
+            SENTENCE_CACHE[text] = translated_text
+            return translated_text
+    except Exception as e:
+        print(f"Sentence Trans Error: {e}")
 
-
-def warmup_connections():
-    """Фоновый прогрев SSL-соединений при старте"""
-
-    def _warmup():
-        try:
-            SESSION.head("https://dictionary.yandex.net", timeout=1)
-            SESSION.head("https://api.dictionaryapi.dev", timeout=1)
-            SESSION.head("https://api.pexels.com", timeout=1)
-            SESSION.head("https://en.wikipedia.org", timeout=1)
-        except:
-            pass
-
-    threading.Thread(target=_warmup, daemon=True).start()
-
-
-# Запускаем прогрев при импорте модуля
-warmup_connections()
+    return None
