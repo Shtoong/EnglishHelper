@@ -6,16 +6,20 @@ YandexKey =
 PexelsKey = 
 
 [USER]
-# Vocabulary level filter (1-10000, lower = more common words)
+# Vocabulary level filter (0-100, lower = show only advanced words)
 VocabLevel = 10
 
-# Main window position (X, Y coordinates)
+# Main window position and size
 WindowX = 100
 WindowY = 100
+WindowWidth = 416
+WindowHeight = 953
 
-# Sentence translation window position (X, Y coordinates)
-WindowSentX = 450
-WindowSentY = 100
+# Sentence translation window (geometry: WIDTHxHEIGHT+X+Y)
+SentWindowGeometry = 600x150+700+100
 
 # Show/hide sentence translation window (True/False)
 ShowSentenceWindow = True
+
+# Auto-pronounce words with US accent (True/False)
+AutoPronounce = True

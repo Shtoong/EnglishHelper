@@ -24,13 +24,11 @@ DEFAULT_CONFIG = {
         "WindowWidth": "416",
         "WindowHeight": "953",
         "ShowSentenceWindow": "True",
-        "SentWindowX": "522",
-        "SentWindowY": "99",
-        "SentWindowWidth": "1194",
-        "SentWindowHeight": "297",
+        "SentWindowGeometry": "600x150+700+100",
         "AutoPronounce": "True"
     }
 }
+
 
 class ConfigManager:
     def __init__(self):
