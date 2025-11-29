@@ -12,20 +12,27 @@ class ResizeGrip(tk.Label):
         self.bind("<Button-1>", self._start_resize)
         self.bind("<B1-Motion>", self._do_resize)
         self.bind("<ButtonRelease-1>", self._stop_resize)
-        self._x = 0
-        self._y = 0
+        self._x_root = 0
+        self._y_root = 0
 
     def _start_resize(self, event):
-        self._x = event.x
-        self._y = event.y
+        self._x_root = event.x_root
+        self._y_root = event.y_root
+        # ВАЖНО: "return 'break'" останавливает всплытие события,
+        # чтобы родительское окно не подумало, что мы хотим его перетаскивать.
+        return "break"
 
     def _do_resize(self, event):
-        dx = event.x - self._x
-        dy = event.y - self._y
+        dx = event.x_root - self._x_root
+        dy = event.y_root - self._y_root
         self.resize_callback(dx, dy)
+        self._x_root = event.x_root
+        self._y_root = event.y_root
+        return "break"
 
     def _stop_resize(self, event):
         self.finish_callback()
+        return "break"
 
 
 class SentenceWindow(tk.Toplevel):
@@ -87,13 +94,18 @@ class SentenceWindow(tk.Toplevel):
                                self.COLORS["text_faint"])
         self.grip.pack(side="right", anchor="se")
 
-        # --- DRAG & DROP LOGIC ---
+        # --- DRAG & DROP ---
         self.dragging = False
-        self.drag_x = 0
-        self.drag_y = 0
+        self.start_x_root = 0
+        self.start_y_root = 0
+        self.win_x = 0
+        self.win_y = 0
 
-        # Привязываем перетаскивание КО ВСЕМУ (кроме кнопки и грипа)
-        for widget in [self, self.top_bar, self.content_frame, self.lbl_eng, self.lbl_rus, self.bottom_bar]:
+        # Привязываем перетаскивание только к безопасным зонам.
+        # НЕ привязываем к self.bottom_bar и self.grip
+        safe_drag_widgets = [self, self.top_bar, self.content_frame, self.lbl_eng, self.lbl_rus]
+
+        for widget in safe_drag_widgets:
             widget.bind("<Button-1>", self.start_move)
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<ButtonRelease-1>", self.stop_move)
@@ -103,15 +115,16 @@ class SentenceWindow(tk.Toplevel):
 
     def start_move(self, event):
         self.dragging = True
-        self.drag_x = event.x
-        self.drag_y = event.y
+        self.start_x_root = event.x_root
+        self.start_y_root = event.y_root
+        self.win_x = self.winfo_x()
+        self.win_y = self.winfo_y()
 
     def do_move(self, event):
         if self.dragging:
-            # Рассчитываем смещение относительно экрана, а не виджета
-            x = self.winfo_x() + (event.x - self.drag_x)
-            y = self.winfo_y() + (event.y - self.drag_y)
-            self.geometry(f"+{x}+{y}")
+            dx = event.x_root - self.start_x_root
+            dy = event.y_root - self.start_y_root
+            self.geometry(f"+{self.win_x + dx}+{self.win_y + dy}")
 
     def stop_move(self, event):
         self.dragging = False

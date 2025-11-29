@@ -1,69 +1,78 @@
-import os
-import sys
 import configparser
+import os
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-DATA_DIR = os.path.join(BASE_DIR, "Data")
+CONFIG_FILE = "settings.ini"
+DATA_DIR = "Data"
 IMG_DIR = os.path.join(DATA_DIR, "Images")
-DICT_DIR = os.path.join(DATA_DIR, "Dict")
-VOCAB_FILE = os.path.join(DATA_DIR, "vocab_10k.txt")
-SETTINGS_FILE = os.path.join(BASE_DIR, "settings.ini")
+DICT_DIR = os.path.join(DATA_DIR, "Dicts")
 
-for d in [DATA_DIR, IMG_DIR, DICT_DIR]:
-    os.makedirs(d, exist_ok=True)
+# Создаем папки, если нет
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(IMG_DIR, exist_ok=True)
+os.makedirs(DICT_DIR, exist_ok=True)
 
 DEFAULT_CONFIG = {
-    "API": {"PexelsKey": "", "YandexKey": ""},
+    "API": {
+        "YandexKey": "",
+        "PexelsKey": ""
+    },
     "USER": {
-        "VocabLevel": "10", 
-        "WindowX": "100", "WindowY": "100",
-        "WindowSentX": "450", "WindowSentY": "100",
-        "ShowSentenceWindow": "True"  # <--- НОВАЯ НАСТРОЙКА
+        "VocabLevel": "10",
+        "WindowX": "100",
+        "WindowY": "100",
+        "WindowWidth": "416",
+        "WindowHeight": "953",
+        "ShowSentenceWindow": "True",
+        "SentWindowX": "522",
+        "SentWindowY": "99",
+        "SentWindowWidth": "1194",
+        "SentWindowHeight": "297",
+        "AutoPronounce": "True"
     }
 }
 
 class ConfigManager:
     def __init__(self):
         self.config = configparser.ConfigParser()
-        self._load()
-
-    def _load(self):
-        if not os.path.exists(SETTINGS_FILE):
-            self.config.read_dict(DEFAULT_CONFIG)
-            self.save()
+        if not os.path.exists(CONFIG_FILE):
+            self._create_default()
         else:
-            self.config.read(SETTINGS_FILE)
-            changed = False
-            for section in DEFAULT_CONFIG:
-                if section not in self.config:
-                    self.config[section] = DEFAULT_CONFIG[section]
+            self.config.read(CONFIG_FILE)
+            self._validate()
+
+    def _create_default(self):
+        for section, options in DEFAULT_CONFIG.items():
+            self.config[section] = options
+        self._save()
+
+    def _validate(self):
+        """Проверяет, есть ли все ключи, и добавляет недостающие"""
+        changed = False
+        for section, options in DEFAULT_CONFIG.items():
+            if not self.config.has_section(section):
+                self.config.add_section(section)
+                changed = True
+            for key, val in options.items():
+                if not self.config.has_option(section, key):
+                    self.config.set(section, key, val)
                     changed = True
-                for key in DEFAULT_CONFIG[section]:
-                    if key not in self.config[section]:
-                        self.config[section][key] = DEFAULT_CONFIG[section][key]
-                        changed = True
-            if changed:
-                self.save()
+        if changed:
+            self._save()
+
+    def _save(self):
+        with open(CONFIG_FILE, 'w') as f:
+            self.config.write(f)
 
     def get(self, section, key, fallback=None):
         return self.config.get(section, key, fallback=fallback)
-    
-    def get_bool(self, section, key, fallback=True):
-        val = self.config.get(section, key, fallback=str(fallback))
-        return val.lower() == 'true'
+
+    def get_bool(self, section, key, fallback=False):
+        return self.config.getboolean(section, key, fallback=fallback)
 
     def set(self, section, key, value):
-        if section not in self.config:
-            self.config[section] = {}
-        self.config[section][str(key)] = str(value)
-        self.save()
-
-    def save(self):
-        with open(SETTINGS_FILE, 'w') as f:
-            self.config.write(f)
+        if not self.config.has_section(section):
+            self.config.add_section(section)
+        self.config.set(section, key, str(value))
+        self._save()
 
 cfg = ConfigManager()
