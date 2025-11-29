@@ -274,7 +274,10 @@ if __name__ == "__main__":
         target=process_word_parallel, args=(w, APP), daemon=True
     ).start()
 
+    # --- СОХРАНЯЕМ CALLBACK ДЛЯ БУФЕРА ОБМЕНА ---
+    APP.clipboard_callback = lambda: handle_clipboard_word(APP)
+
     APP.hook_func = on_key_event
     keyboard.hook(on_key_event)
-    keyboard.add_hotkey("ctrl+c", lambda: handle_clipboard_word(APP))
+    keyboard.add_hotkey("ctrl+c", APP.clipboard_callback)
     APP.mainloop()

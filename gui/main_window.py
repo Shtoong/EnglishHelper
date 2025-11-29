@@ -482,29 +482,29 @@ class MainWindow(tk.Tk):
 
     def open_settings(self):
         keyboard.unhook_all()
-        top = tk.Toplevel(self);
-        top.title("Settings");
-        top.geometry("350x400");
-        top.configure(bg=self.COLORS["bg"]);
+        top = tk.Toplevel(self)
+        top.title("Settings")
+        top.geometry("350x400")
+        top.configure(bg=self.COLORS["bg"])
         top.attributes("-topmost", True)
         tk.Label(top, text="Settings", font=("Segoe UI", 14, "bold"), bg=self.COLORS["bg"],
                  fg=self.COLORS["text_header"]).pack(pady=10)
         tk.Label(top, text="Yandex Dictionary Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
                                                                                                              padx=20)
-        entry_yandex = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0);
-        entry_yandex.pack(padx=20, pady=5, ipady=3);
+        entry_yandex = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0)
+        entry_yandex.pack(padx=20, pady=5, ipady=3)
         entry_yandex.insert(0, cfg.get("API", "YandexKey"))
         tk.Label(top, text="Pexels API Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
                                                                                                       padx=20)
-        entry_pexels = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0);
-        entry_pexels.pack(padx=20, pady=5, ipady=3);
+        entry_pexels = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0)
+        entry_pexels.pack(padx=20, pady=5, ipady=3)
         entry_pexels.insert(0, cfg.get("API", "PexelsKey"))
-        chk_frame = tk.Frame(top, bg=self.COLORS["bg"]);
+        chk_frame = tk.Frame(top, bg=self.COLORS["bg"])
         chk_frame.pack(anchor="w", padx=20, pady=15)
         show_sent_var = tk.BooleanVar(value=cfg.get_bool("USER", "ShowSentenceWindow"))
         chk_sent = tk.Checkbutton(chk_frame, text="Show Sentence Window", variable=show_sent_var, onvalue=True,
                                   offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                  selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"]);
+                                  selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
         chk_sent.pack(anchor="w", pady=2)
         try:
             val_pronounce = cfg.get_bool("USER", "AutoPronounce")
@@ -513,26 +513,34 @@ class MainWindow(tk.Tk):
         auto_pronounce_var = tk.BooleanVar(value=val_pronounce)
         chk_pronounce = tk.Checkbutton(chk_frame, text="Auto-pronounce (US)", variable=auto_pronounce_var, onvalue=True,
                                        offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                       selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"]);
+                                       selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
         chk_pronounce.pack(anchor="w", pady=2)
 
         def save_and_close():
-            cfg.set("API", "YandexKey", entry_yandex.get().strip());
+            cfg.set("API", "YandexKey", entry_yandex.get().strip())
             cfg.set("API", "PexelsKey", entry_pexels.get().strip())
-            new_sent_state = show_sent_var.get();
+            new_sent_state = show_sent_var.get()
             cfg.set("USER", "ShowSentenceWindow", new_sent_state)
             if new_sent_state:
                 self.sent_window.show()
             else:
                 self.sent_window.hide()
             cfg.set("USER", "AutoPronounce", auto_pronounce_var.get())
-            top.destroy();
-            if hasattr(self, "hook_func"): keyboard.hook(self.hook_func)
+            top.destroy()
+            # Восстанавливаем хуки
+            if hasattr(self, "hook_func"):
+                keyboard.hook(self.hook_func)
+            if hasattr(self, "clipboard_callback"):
+                keyboard.add_hotkey("ctrl+c", self.clipboard_callback)
 
         def on_close():
-            top.destroy();
+            top.destroy()
+            # Восстанавливаем хуки
+            if hasattr(self, "hook_func"):
+                keyboard.hook(self.hook_func)
+            if hasattr(self, "clipboard_callback"):
+                keyboard.add_hotkey("ctrl+c", self.clipboard_callback)
 
-        if hasattr(self, "hook_func"): keyboard.hook(self.hook_func)
         tk.Button(top, text="Save", command=save_and_close, bg=self.COLORS["text_accent"], fg="white",
                   font=("Segoe UI", 10, "bold"), bd=0, padx=20, pady=5, cursor="hand2").pack(pady=10)
         top.protocol("WM_DELETE_WINDOW", on_close)
