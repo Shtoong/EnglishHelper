@@ -1,8 +1,6 @@
 import requests
 import os
-import hashlib
-from PIL import Image
-from io import BytesIO
+import json
 from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
 
@@ -14,7 +12,6 @@ def get_cache_path(word):
 
 def check_cache_only(word):
     """Проверяет наличие перевода только в кэше"""
-    import json
     path = get_cache_path(word)
     if os.path.exists(path):
         try:
@@ -32,7 +29,6 @@ def check_cache_only(word):
 
 def load_full_dictionary_data(word):
     """Загружает полные данные словаря из кэша, если есть"""
-    import json
     path = get_cache_path(word)
     if os.path.exists(path):
         try:
@@ -45,7 +41,6 @@ def load_full_dictionary_data(word):
 
 def save_full_dictionary_data(word, data):
     """Сохраняет полные данные словаря в кэш"""
-    import json
     path = get_cache_path(word)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -131,13 +126,23 @@ def get_image_path(word):
 
 def download_image(url, word):
     """Скачивает и сохраняет изображение с понятным именем"""
+    # Убеждаемся что папка существует
+    os.makedirs(IMG_DIR, exist_ok=True)
+
+    # User-Agent обязателен для Wikimedia и многих других серверов
+    headers = {
+        "User-Agent": "EnglishHelper/1.0 (Educational App; Python/requests)"
+    }
+
     try:
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code == 200:
             path = get_image_path(word)
             with open(path, "wb") as f:
                 f.write(resp.content)
-            return path
+
+            if os.path.exists(path):
+                return path
     except Exception as e:
         print(f"Download Error: {e}")
     return None
@@ -147,7 +152,7 @@ def fetch_pexels_image(word):
     """Поиск изображения в Pexels"""
     key = cfg.get("API", "PexelsKey")
     if not key:
-        # Проверяем, есть ли уже сохраненное изображение
+        # Проверяем, есть ли уже сохраненное изображение (если ключа нет)
         cached_path = get_image_path(word)
         if os.path.exists(cached_path):
             return cached_path
@@ -174,37 +179,77 @@ def fetch_pexels_image(word):
 
 def fetch_wiki_image(word):
     """Поиск изображения в Wikipedia с фильтрацией логотипов"""
-    # Сначала проверяем кэш
-    cached_path = get_image_path(word)
-    if os.path.exists(cached_path):
-        return cached_path
 
     url = f"https://en.wikipedia.org/w/api.php?action=query&titles={word}&prop=pageimages&format=json&pithumbsize=500"
 
-    # Список имен файлов, которые часто являются логотипами или иконками
+    # User-Agent обязателен для Wikipedia API
+    headers = {
+        "User-Agent": "EnglishHelper/1.0 (Educational App; Python/requests)"
+    }
+
+    # Расширенный список нежелательных паттернов
     BLACKLIST = [
+        # Служебные иконки Wikipedia
         "Commons-logo", "Disambig", "Ambox", "Wiki_letter",
         "Question_book", "Folder", "Decrease", "Increase",
-        "Edit-clear", "Symbol", "Icon"
+        "Edit-clear", "Symbol", "Icon",
+
+        # Placeholder и отсутствующие изображения
+        "No_image", "Image_missing", "Placeholder", "Replace_this",
+
+        # Другие Wiki-проекты
+        "Wiktionary", "Wikiquote", "Wikibooks", "Wikisource",
+
+        # Геральдика (часто нерелевантна для обучения языку)
+        "Flag_of", "Coat_of_arms", "Emblem",
+
+        # Стандартные иконки KDE/GNOME
+        "Crystal", "Nuvola", "Tango",
+
+        # SVG логотипы
+        ".svg"
     ]
 
     try:
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(url, headers=headers, timeout=5)
+
         if resp.status_code == 200:
             data = resp.json()
             pages = data.get("query", {}).get("pages", {})
+
             for page_id in pages:
+                # Пропускаем disambiguation pages (ID = -1)
+                if page_id == "-1":
+                    continue
+
                 page = pages[page_id]
-                if "thumbnail" in page:
-                    img_url = page["thumbnail"]["source"]
 
-                    # Проверяем URL на наличие мусорных слов
-                    if any(bad in img_url for bad in BLACKLIST):
-                        continue
+                # Проверяем наличие thumbnail
+                if "thumbnail" not in page:
+                    continue
 
-                    return download_image(img_url, word)
+                thumbnail = page["thumbnail"]
+                img_url = thumbnail.get("source", "")
+
+                if not img_url:
+                    continue
+
+                # Проверяем URL на наличие нежелательных паттернов
+                if any(bad.lower() in img_url.lower() for bad in BLACKLIST):
+                    continue
+
+                # Проверяем минимальный размер (избегаем маленькие иконки)
+                width = thumbnail.get("width", 0)
+                height = thumbnail.get("height", 0)
+
+                if width < 100 or height < 100:
+                    continue
+
+                return download_image(img_url, word)
+
     except Exception as e:
         print(f"Wiki Error: {e}")
+
     return None
 
 
@@ -233,6 +278,7 @@ def fetch_sentence_translation(text):
     if not text: return ""
 
     try:
+        # Используем публичный API Google Translate
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
@@ -244,6 +290,7 @@ def fetch_sentence_translation(text):
         resp = requests.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
+            # Собираем перевод из частей
             translated_text = "".join([item[0] for item in data[0] if item[0]])
             return translated_text
     except Exception as e:
