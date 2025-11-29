@@ -48,17 +48,18 @@ class SentenceWindow(tk.Toplevel):
         except:
             pass
 
-        custom_font = ("Segoe UI", 12)
+        # Используем шрифт как в главном окне для перевода слова
+        translation_font = ("Segoe UI", 33)
 
         self.content_frame = tk.Frame(self, bg=COLORS["bg"])
         self.content_frame.pack(fill="both", expand=True)
 
-        self.lbl_eng = tk.Label(self.content_frame, text="", font=custom_font, bg=COLORS["bg"],
+        self.lbl_eng = tk.Label(self.content_frame, text="", font=("Segoe UI", 12), bg=COLORS["bg"],
                                 fg=COLORS["text_main"], justify="left", anchor="w",
                                 wraplength=initial_wrap)
         self.lbl_eng.pack(fill="x", padx=15, pady=(10, 5))
 
-        self.lbl_rus = tk.Label(self.content_frame, text="...", font=custom_font, bg=COLORS["bg"],
+        self.lbl_rus = tk.Label(self.content_frame, text="...", font=translation_font, bg=COLORS["bg"],
                                 fg=COLORS["text_accent"], justify="left", anchor="w",
                                 wraplength=initial_wrap)
         self.lbl_rus.pack(fill="x", padx=15, pady=(5, 10))
@@ -75,7 +76,7 @@ class SentenceWindow(tk.Toplevel):
         for widget in [self, self.lbl_eng, self.lbl_rus, self.content_frame]:
             widget.bind("<Button-1>", self.start_move)
             widget.bind("<B1-Motion>", self.do_move)
-            widget.bind("<ButtonRelease-1>", self.stop_move)  # Сохраняем, когда отпустили
+            widget.bind("<ButtonRelease-1>", self.stop_move)
 
         self.bind("<Configure>", self.on_resize)
 
@@ -112,7 +113,6 @@ class SentenceWindow(tk.Toplevel):
     def save_geometry(self, event=None):
         """Сохраняем текущее положение в файл"""
         cfg.set("USER", "SentWindowGeometry", self.geometry())
-        cfg.save()
 
     def show(self):
         self.geometry(cfg.get("USER", "SentWindowGeometry", "600x150+700+100"))
@@ -121,5 +121,4 @@ class SentenceWindow(tk.Toplevel):
     def hide(self):
         cfg.set("USER", "SentWindowGeometry", self.geometry())
         cfg.set("USER", "ShowSentenceWindow", "False")
-        cfg.save()  # <-- Добавлено сохранение
         self.withdraw()
