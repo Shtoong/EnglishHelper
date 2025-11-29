@@ -216,7 +216,7 @@ class MainWindow(tk.Tk):
             pady=3,
             relief="flat"
         )
-        self.btn_toggle_sent.pack(side="left", padx=10)
+        self.btn_toggle_sent.pack(side="left", padx=(10, 5))
         self.btn_toggle_sent.bind("<Button-1>", self.toggle_sentence_window)
         self.btn_toggle_sent.bind("<Enter>", lambda e: self.btn_toggle_sent.config(
             bg=self.COLORS["text_accent"],
@@ -224,8 +224,29 @@ class MainWindow(tk.Tk):
         ))
         self.btn_toggle_sent.bind("<Leave>", lambda e: self._update_sentence_button_style())
 
-        # Устанавливаем начальное состояние кнопки
+        # Кнопка переключения автопроизношения
+        self.btn_toggle_pronounce = tk.Label(
+            status_bar,
+            text="Pronunciation",
+            font=("Segoe UI", 8),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_main"],
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            relief="flat"
+        )
+        self.btn_toggle_pronounce.pack(side="left", padx=(0, 10))
+        self.btn_toggle_pronounce.bind("<Button-1>", self.toggle_auto_pronounce)
+        self.btn_toggle_pronounce.bind("<Enter>", lambda e: self.btn_toggle_pronounce.config(
+            bg=self.COLORS["text_accent"],
+            fg=self.COLORS["bg"]
+        ))
+        self.btn_toggle_pronounce.bind("<Leave>", lambda e: self._update_pronounce_button_style())
+
+        # Устанавливаем начальное состояние кнопок
         self._update_sentence_button_style()
+        self._update_pronounce_button_style()
 
     def _update_sentence_button_style(self):
         """Обновляет стиль кнопки в зависимости от состояния окна"""
@@ -241,6 +262,20 @@ class MainWindow(tk.Tk):
                 fg=self.COLORS["text_faint"]
             )
 
+    def _update_pronounce_button_style(self):
+        """Обновляет стиль кнопки автопроизношения в зависимости от состояния"""
+        is_enabled = cfg.get_bool("USER", "AutoPronounce", True)
+        if is_enabled:
+            self.btn_toggle_pronounce.config(
+                bg=self.COLORS["text_accent"],
+                fg=self.COLORS["bg"]
+            )
+        else:
+            self.btn_toggle_pronounce.config(
+                bg=self.COLORS["bg_secondary"],
+                fg=self.COLORS["text_faint"]
+            )
+
     def toggle_sentence_window(self, event=None):
         current_state = cfg.get_bool("USER", "ShowSentenceWindow")
         new_state = not current_state
@@ -250,6 +285,13 @@ class MainWindow(tk.Tk):
         else:
             self.sent_window.withdraw()
         self._update_sentence_button_style()
+
+    def toggle_auto_pronounce(self, event=None):
+        """Переключает автопроизношение"""
+        current_state = cfg.get_bool("USER", "AutoPronounce", True)
+        new_state = not current_state
+        cfg.set("USER", "AutoPronounce", new_state)
+        self._update_pronounce_button_style()
 
     def _bind_events(self):
         self.bind("<Button-1>", self.start_move)
