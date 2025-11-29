@@ -136,10 +136,7 @@ class MainWindow(tk.Tk):
                              cursor="hand2")
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
-        btn_settings = tk.Label(top_bar, text="⚙", font=("Arial", 14), bg=self.COLORS["bg"],
-                                fg=self.COLORS["text_faint"], cursor="hand2")
-        btn_settings.pack(side="right", padx=5)
-        btn_settings.bind("<Button-1>", lambda e: self.open_settings())
+
         self.lbl_word = tk.Label(self, text="English Helper", font=self.FONTS["header"], bg=self.COLORS["bg"],
                                  fg=self.COLORS["text_header"])
         self.lbl_word.pack(pady=(10, 5), anchor="center")
@@ -207,23 +204,52 @@ class MainWindow(tk.Tk):
                                    fg=self.COLORS["text_faint"])
         self.lbl_status.pack(side="right", padx=5)
 
-        self.btn_toggle_sent = tk.Label(status_bar, text="👁", font=("Segoe UI", 10), bg=self.COLORS["bg"],
-                                        fg=self.COLORS["text_faint"], cursor="hand2")
+        # Кнопка переключения окна предложений
+        self.btn_toggle_sent = tk.Label(
+            status_bar,
+            text="Sentence",
+            font=("Segoe UI", 8),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_main"],
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            relief="flat"
+        )
         self.btn_toggle_sent.pack(side="left", padx=10)
         self.btn_toggle_sent.bind("<Button-1>", self.toggle_sentence_window)
-        self.btn_toggle_sent.bind("<Enter>", lambda e: self.btn_toggle_sent.config(fg=self.COLORS["text_accent"]))
-        self.btn_toggle_sent.bind("<Leave>", lambda e: self.btn_toggle_sent.config(fg=self.COLORS["text_faint"]))
+        self.btn_toggle_sent.bind("<Enter>", lambda e: self.btn_toggle_sent.config(
+            bg=self.COLORS["text_accent"],
+            fg=self.COLORS["bg"]
+        ))
+        self.btn_toggle_sent.bind("<Leave>", lambda e: self._update_sentence_button_style())
+
+        # Устанавливаем начальное состояние кнопки
+        self._update_sentence_button_style()
+
+    def _update_sentence_button_style(self):
+        """Обновляет стиль кнопки в зависимости от состояния окна"""
+        is_visible = cfg.get_bool("USER", "ShowSentenceWindow", True)
+        if is_visible:
+            self.btn_toggle_sent.config(
+                bg=self.COLORS["text_accent"],
+                fg=self.COLORS["bg"]
+            )
+        else:
+            self.btn_toggle_sent.config(
+                bg=self.COLORS["bg_secondary"],
+                fg=self.COLORS["text_faint"]
+            )
 
     def toggle_sentence_window(self, event=None):
         current_state = cfg.get_bool("USER", "ShowSentenceWindow")
         new_state = not current_state
         cfg.set("USER", "ShowSentenceWindow", new_state)
         if new_state:
-            self.sent_window.show()
-            self.btn_toggle_sent.config(text="👁", fg=self.COLORS["text_accent"])
+            self.sent_window.deiconify()
         else:
-            self.sent_window.hide()
-            self.btn_toggle_sent.config(text="👁‍🗨", fg=self.COLORS["text_faint"])
+            self.sent_window.withdraw()
+        self._update_sentence_button_style()
 
     def _bind_events(self):
         self.bind("<Button-1>", self.start_move)
@@ -382,7 +408,8 @@ class MainWindow(tk.Tk):
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
-        cfg.set("USER", "WindowWidth", self.winfo_width()); cfg.set("USER", "WindowHeight", self.winfo_height())
+        cfg.set("USER", "WindowWidth", self.winfo_width());
+        cfg.set("USER", "WindowHeight", self.winfo_height())
 
     def play_audio(self, index: int):
         if index < len(self.current_audio_urls):
@@ -413,9 +440,11 @@ class MainWindow(tk.Tk):
 
     def update_trans_ui(self, data, source: str):
         if data:
-            self.lbl_rus.config(text=data["rus"]); self.sources["trans"] = source
+            self.lbl_rus.config(text=data["rus"]);
+            self.sources["trans"] = source
         else:
-            self.sources["trans"] = "-"; self.refresh_status()
+            self.sources["trans"] = "-";
+            self.refresh_status()
 
     def update_img_ui(self, path, source: str):
         if path:
@@ -437,9 +466,12 @@ class MainWindow(tk.Tk):
                 self.img_container.image = tki;
                 self.sources["img"] = source
             except Exception as e:
-                print(f"Img Error: {e}"); self.img_container.config(image=""); self.sources["img"] = "Err"
+                print(f"Img Error: {e}");
+                self.img_container.config(image="");
+                self.sources["img"] = "Err"
         else:
-            self.img_container.config(image=""); self.sources["img"] = "No"
+            self.img_container.config(image="");
+            self.sources["img"] = "No"
         self.refresh_status()
 
     def reset_ui(self, word: str):
@@ -467,7 +499,8 @@ class MainWindow(tk.Tk):
         self.update_popup_content()
 
     def move_popup(self, event):
-        self.lbl_lvl_val.config(text=str(self.vocab_var.get())); self.update_popup_content()
+        self.lbl_lvl_val.config(text=str(self.vocab_var.get()));
+        self.update_popup_content()
 
     def update_popup_content(self):
         if self.popup: self.popup.update_words(self.vocab_var.get())
@@ -479,71 +512,6 @@ class MainWindow(tk.Tk):
 
     def save_level(self, event=None):
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
-
-    def open_settings(self):
-        keyboard.unhook_all()
-        top = tk.Toplevel(self)
-        top.title("Settings")
-        top.geometry("350x400")
-        top.configure(bg=self.COLORS["bg"])
-        top.attributes("-topmost", True)
-        tk.Label(top, text="Settings", font=("Segoe UI", 14, "bold"), bg=self.COLORS["bg"],
-                 fg=self.COLORS["text_header"]).pack(pady=10)
-        tk.Label(top, text="Yandex Dictionary Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
-                                                                                                             padx=20)
-        entry_yandex = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0)
-        entry_yandex.pack(padx=20, pady=5, ipady=3)
-        entry_yandex.insert(0, cfg.get("API", "YandexKey"))
-        tk.Label(top, text="Pexels API Key:", bg=self.COLORS["bg"], fg=self.COLORS["text_main"]).pack(anchor="w",
-                                                                                                      padx=20)
-        entry_pexels = tk.Entry(top, width=45, bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"], bd=0)
-        entry_pexels.pack(padx=20, pady=5, ipady=3)
-        entry_pexels.insert(0, cfg.get("API", "PexelsKey"))
-        chk_frame = tk.Frame(top, bg=self.COLORS["bg"])
-        chk_frame.pack(anchor="w", padx=20, pady=15)
-        show_sent_var = tk.BooleanVar(value=cfg.get_bool("USER", "ShowSentenceWindow"))
-        chk_sent = tk.Checkbutton(chk_frame, text="Show Sentence Window", variable=show_sent_var, onvalue=True,
-                                  offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                  selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
-        chk_sent.pack(anchor="w", pady=2)
-        try:
-            val_pronounce = cfg.get_bool("USER", "AutoPronounce")
-        except:
-            val_pronounce = False
-        auto_pronounce_var = tk.BooleanVar(value=val_pronounce)
-        chk_pronounce = tk.Checkbutton(chk_frame, text="Auto-pronounce (US)", variable=auto_pronounce_var, onvalue=True,
-                                       offvalue=False, bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                       selectcolor=self.COLORS["bg_secondary"], activebackground=self.COLORS["bg"])
-        chk_pronounce.pack(anchor="w", pady=2)
-
-        def save_and_close():
-            cfg.set("API", "YandexKey", entry_yandex.get().strip())
-            cfg.set("API", "PexelsKey", entry_pexels.get().strip())
-            new_sent_state = show_sent_var.get()
-            cfg.set("USER", "ShowSentenceWindow", new_sent_state)
-            if new_sent_state:
-                self.sent_window.show()
-            else:
-                self.sent_window.hide()
-            cfg.set("USER", "AutoPronounce", auto_pronounce_var.get())
-            top.destroy()
-            # Восстанавливаем хуки
-            if hasattr(self, "hook_func"):
-                keyboard.hook(self.hook_func)
-            if hasattr(self, "clipboard_callback"):
-                keyboard.add_hotkey("ctrl+c", self.clipboard_callback)
-
-        def on_close():
-            top.destroy()
-            # Восстанавливаем хуки
-            if hasattr(self, "hook_func"):
-                keyboard.hook(self.hook_func)
-            if hasattr(self, "clipboard_callback"):
-                keyboard.add_hotkey("ctrl+c", self.clipboard_callback)
-
-        tk.Button(top, text="Save", command=save_and_close, bg=self.COLORS["text_accent"], fg="white",
-                  font=("Segoe UI", 10, "bold"), bd=0, padx=20, pady=5, cursor="hand2").pack(pady=10)
-        top.protocol("WM_DELETE_WINDOW", on_close)
 
     def start_move(self, event):
         widget = event.widget
@@ -568,4 +536,6 @@ class MainWindow(tk.Tk):
         self.dragging_allowed = False
 
     def close_app(self):
-        keyboard.unhook_all(); self.destroy(); sys.exit(0)
+        keyboard.unhook_all();
+        self.destroy();
+        sys.exit(0)
