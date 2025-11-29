@@ -5,6 +5,7 @@ CONFIG_FILE = "settings.ini"
 DATA_DIR = "Data"
 IMG_DIR = os.path.join(DATA_DIR, "Images")
 DICT_DIR = os.path.join(DATA_DIR, "Dicts")
+VOCAB_FILE = "vocab_10k.txt"
 
 # Создаем папки, если нет
 os.makedirs(DATA_DIR, exist_ok=True)
