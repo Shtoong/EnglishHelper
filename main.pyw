@@ -33,28 +33,6 @@ RU_TO_EN = {
 
 TRANSLATION_TIMER = None
 CLIPBOARD_LAST_WORD = ""
-LAST_KEYSTROKE_TIME = 0
-
-
-def get_smart_delay():
-    """Возвращает задержку в зависимости от скорости последнего нажатия"""
-    global LAST_KEYSTROKE_TIME
-    current = time.time()
-
-    if LAST_KEYSTROKE_TIME == 0:
-        LAST_KEYSTROKE_TIME = current
-        return 0.35
-
-    interval = current - LAST_KEYSTROKE_TIME
-    LAST_KEYSTROKE_TIME = current
-
-    # Чем быстрее печатаете, тем больше задержка
-    if interval < 0.1:
-        return 0.7  # Очень быстро - ждём дольше
-    elif interval < 0.3:
-        return 0.4  # Нормально
-    else:
-        return 0.2  # Медленно - быстрый отклик
 
 
 def is_english_layout():
@@ -163,32 +141,36 @@ def handle_clipboard_word(app):
     ).start()
 
 
-def trigger_sentence_update(app):
+def trigger_sentence_update(app, is_delimiter=False):
     global TRANSLATION_TIMER
 
+    # 1. Всегда обновляем визуально английский текст (мгновенно)
     eng_display = EDITOR.get_text_with_cursor()
     app.after_idle(lambda: app.sent_window.lbl_eng.config(text=eng_display))
 
+    # 2. Если есть старый таймер, отменяем его
     if TRANSLATION_TIMER is not None:
         TRANSLATION_TIMER.cancel()
 
-    def delayed_translation_task():
-        clean_text = EDITOR.get_text().strip()
-        if clean_text:
-            tr_text = fetch_sentence_translation(clean_text)
-            app.after(
-                0,
-                lambda: app.sent_window.lbl_rus.config(text=tr_text),
-            )
-        else:
-            app.after(
-                0,
-                lambda: app.sent_window.lbl_rus.config(text="..."),
-            )
+    # 3. Запускаем перевод ТОЛЬКО если это разделитель (конец слова/предложения)
+    if is_delimiter:
+        def delayed_translation_task():
+            clean_text = EDITOR.get_text().strip()
+            if clean_text:
+                tr_text = fetch_sentence_translation(clean_text)
+                app.after(
+                    0,
+                    lambda: app.sent_window.lbl_rus.config(text=tr_text),
+                )
+            else:
+                app.after(
+                    0,
+                    lambda: app.sent_window.lbl_rus.config(text="..."),
+                )
 
-    adaptive_delay = get_smart_delay()
-    TRANSLATION_TIMER = threading.Timer(adaptive_delay, delayed_translation_task)
-    TRANSLATION_TIMER.start()
+        # Минимальная задержка 0.1с
+        TRANSLATION_TIMER = threading.Timer(0.1, delayed_translation_task)
+        TRANSLATION_TIMER.start()
 
 
 def on_key_event(e):
@@ -205,6 +187,7 @@ def on_key_event(e):
         key = RU_TO_EN[key_lower]
 
     update_needed = False
+    is_delimiter = False  # Флаг: является ли текущая клавиша концом слова
 
     if len(key) == 1:
         if (SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]):
@@ -218,6 +201,7 @@ def on_key_event(e):
         if re.match(r"^[a-zA-Z]$", key):
             BUFFER += key
         elif key in [" ", ".", ",", "!", "?"]:
+            is_delimiter = True
             if BUFFER:
                 threading.Thread(
                     target=process_word_parallel,
@@ -231,6 +215,20 @@ def on_key_event(e):
     elif key_lower == "space":
         EDITOR.insert(" ")
         update_needed = True
+        is_delimiter = True
+        if BUFFER:
+            threading.Thread(
+                target=process_word_parallel,
+                args=(BUFFER, APP),
+                daemon=True,
+            ).start()
+            BUFFER = ""
+
+    elif key_lower == "enter":
+        EDITOR.insert("\n")
+        update_needed = True
+        is_delimiter = True
+        SENTENCE_FINISHED = True  # Enter завершает мысль/предложение
         if BUFFER:
             threading.Thread(
                 target=process_word_parallel,
@@ -259,7 +257,7 @@ def on_key_event(e):
         update_needed = True
 
     if update_needed:
-        trigger_sentence_update(APP)
+        trigger_sentence_update(APP, is_delimiter=is_delimiter)
 
 
 if __name__ == "__main__":
