@@ -33,6 +33,28 @@ RU_TO_EN = {
 
 TRANSLATION_TIMER = None
 CLIPBOARD_LAST_WORD = ""
+LAST_KEYSTROKE_TIME = 0
+
+
+def get_smart_delay():
+    """Возвращает задержку в зависимости от скорости последнего нажатия"""
+    global LAST_KEYSTROKE_TIME
+    current = time.time()
+
+    if LAST_KEYSTROKE_TIME == 0:
+        LAST_KEYSTROKE_TIME = current
+        return 0.35
+
+    interval = current - LAST_KEYSTROKE_TIME
+    LAST_KEYSTROKE_TIME = current
+
+    # Чем быстрее печатаете, тем больше задержка
+    if interval < 0.1:
+        return 0.7  # Очень быстро - ждём дольше
+    elif interval < 0.3:
+        return 0.4  # Нормально
+    else:
+        return 0.2  # Медленно - быстрый отклик
 
 
 def is_english_layout():
@@ -164,7 +186,8 @@ def trigger_sentence_update(app):
                 lambda: app.sent_window.lbl_rus.config(text="..."),
             )
 
-    TRANSLATION_TIMER = threading.Timer(0.35, delayed_translation_task)
+    adaptive_delay = get_smart_delay()
+    TRANSLATION_TIMER = threading.Timer(adaptive_delay, delayed_translation_task)
     TRANSLATION_TIMER.start()
 
 
