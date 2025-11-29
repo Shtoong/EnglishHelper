@@ -141,19 +141,23 @@ def handle_clipboard_word(app):
     ).start()
 
 
-def trigger_sentence_update(app, is_delimiter=False):
+def trigger_sentence_update(app, need_translate=False):
+    """
+    Обновляет текст в окне.
+    API дергается ТОЛЬКО если need_translate=True (конец слова/предложения).
+    """
     global TRANSLATION_TIMER
 
-    # 1. Всегда обновляем визуально английский текст (мгновенно)
+    # 1. Визуальное обновление английского текста - всегда и мгновенно
     eng_display = EDITOR.get_text_with_cursor()
     app.after_idle(lambda: app.sent_window.lbl_eng.config(text=eng_display))
 
-    # 2. Если есть старый таймер, отменяем его
+    # 2. Сбрасываем предыдущий таймер (чтобы не переводить недописанное)
     if TRANSLATION_TIMER is not None:
         TRANSLATION_TIMER.cancel()
 
-    # 3. Запускаем перевод ТОЛЬКО если это разделитель (конец слова/предложения)
-    if is_delimiter:
+    # 3. Если это разделитель - запускаем перевод
+    if need_translate:
         def delayed_translation_task():
             clean_text = EDITOR.get_text().strip()
             if clean_text:
@@ -168,7 +172,7 @@ def trigger_sentence_update(app, is_delimiter=False):
                     lambda: app.sent_window.lbl_rus.config(text="..."),
                 )
 
-        # Минимальная задержка 0.1с
+        # Минимальная задержка 0.1с (защита от слишком быстрого спама пробелами)
         TRANSLATION_TIMER = threading.Timer(0.1, delayed_translation_task)
         TRANSLATION_TIMER.start()
 
@@ -187,7 +191,7 @@ def on_key_event(e):
         key = RU_TO_EN[key_lower]
 
     update_needed = False
-    is_delimiter = False  # Флаг: является ли текущая клавиша концом слова
+    need_translate = False  # Флаг: нужно ли дергать переводчик
 
     if len(key) == 1:
         if (SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]):
@@ -201,7 +205,7 @@ def on_key_event(e):
         if re.match(r"^[a-zA-Z]$", key):
             BUFFER += key
         elif key in [" ", ".", ",", "!", "?"]:
-            is_delimiter = True
+            need_translate = True  # <-- Разделитель
             if BUFFER:
                 threading.Thread(
                     target=process_word_parallel,
@@ -215,7 +219,7 @@ def on_key_event(e):
     elif key_lower == "space":
         EDITOR.insert(" ")
         update_needed = True
-        is_delimiter = True
+        need_translate = True  # <-- Пробел = перевод
         if BUFFER:
             threading.Thread(
                 target=process_word_parallel,
@@ -227,8 +231,8 @@ def on_key_event(e):
     elif key_lower == "enter":
         EDITOR.insert("\n")
         update_needed = True
-        is_delimiter = True
-        SENTENCE_FINISHED = True  # Enter завершает мысль/предложение
+        need_translate = True  # <-- Enter = перевод
+        SENTENCE_FINISHED = True
         if BUFFER:
             threading.Thread(
                 target=process_word_parallel,
@@ -242,6 +246,7 @@ def on_key_event(e):
         update_needed = True
         if BUFFER: BUFFER = BUFFER[:-1]
         SENTENCE_FINISHED = False
+        # При удалении перевод НЕ вызываем, ждем разделителя
 
     elif key_lower == "delete":
         EDITOR.delete()
@@ -257,7 +262,7 @@ def on_key_event(e):
         update_needed = True
 
     if update_needed:
-        trigger_sentence_update(APP, is_delimiter=is_delimiter)
+        trigger_sentence_update(APP, need_translate=need_translate)
 
 
 if __name__ == "__main__":
