@@ -3,16 +3,13 @@ import os
 import hashlib
 from PIL import Image
 from io import BytesIO
-from config import cfg
-
-# Глобальный кэш переводов предложений
-SENTENCE_CACHE = {}
+from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
 
 def get_cache_path(word):
     """Возвращает путь к кэшированному файлу данных слова"""
-    safe_word = "".join(c for c in word if c.isalnum())
-    return os.path.join("Data", "Cache", f"{safe_word}.json")
+    safe_word = "".join(c for c in word if c.isalnum()).lower()
+    return os.path.join(DICT_DIR, f"{safe_word}-full.json")
 
 
 def check_cache_only(word):
@@ -49,7 +46,6 @@ def load_full_dictionary_data(word):
 def save_full_dictionary_data(word, data):
     """Сохраняет полные данные словаря в кэш"""
     import json
-    os.makedirs(os.path.join("Data", "Cache"), exist_ok=True)
     path = get_cache_path(word)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -127,20 +123,18 @@ def fetch_word_translation(word):
     return None
 
 
-def download_image(url):
-    """Скачивает и сохраняет изображение во временный файл"""
+def get_image_path(word):
+    """Возвращает путь для сохранения изображения слова"""
+    safe_word = "".join(c for c in word if c.isalnum()).lower()
+    return os.path.join(IMG_DIR, f"{safe_word}.jpg")
+
+
+def download_image(url, word):
+    """Скачивает и сохраняет изображение с понятным именем"""
     try:
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
-            img_dir = os.path.join("Data", "Images")
-            os.makedirs(img_dir, exist_ok=True)
-
-            # Генерируем имя файла из URL
-            ext = url.split(".")[-1].split("?")[0]
-            if len(ext) > 4 or not ext: ext = "jpg"
-            filename = f"{hashlib.md5(url.encode()).hexdigest()}.{ext}"
-            path = os.path.join(img_dir, filename)
-
+            path = get_image_path(word)
             with open(path, "wb") as f:
                 f.write(resp.content)
             return path
@@ -152,7 +146,17 @@ def download_image(url):
 def fetch_pexels_image(word):
     """Поиск изображения в Pexels"""
     key = cfg.get("API", "PexelsKey")
-    if not key: return None
+    if not key:
+        # Проверяем, есть ли уже сохраненное изображение
+        cached_path = get_image_path(word)
+        if os.path.exists(cached_path):
+            return cached_path
+        return None
+
+    # Сначала проверяем кэш
+    cached_path = get_image_path(word)
+    if os.path.exists(cached_path):
+        return cached_path
 
     url = f"https://api.pexels.com/v1/search?query={word}&per_page=1"
     headers = {"Authorization": key}
@@ -162,7 +166,7 @@ def fetch_pexels_image(word):
             data = resp.json()
             if data.get("photos"):
                 img_url = data["photos"][0]["src"]["medium"]
-                return download_image(img_url)
+                return download_image(img_url, word)
     except Exception as e:
         print(f"Pexels Error: {e}")
     return None
@@ -170,6 +174,11 @@ def fetch_pexels_image(word):
 
 def fetch_wiki_image(word):
     """Поиск изображения в Wikipedia с фильтрацией логотипов"""
+    # Сначала проверяем кэш
+    cached_path = get_image_path(word)
+    if os.path.exists(cached_path):
+        return cached_path
+
     url = f"https://en.wikipedia.org/w/api.php?action=query&titles={word}&prop=pageimages&format=json&pithumbsize=500"
 
     # Список имен файлов, которые часто являются логотипами или иконками
@@ -193,7 +202,7 @@ def fetch_wiki_image(word):
                     if any(bad in img_url for bad in BLACKLIST):
                         continue
 
-                    return download_image(img_url)
+                    return download_image(img_url, word)
     except Exception as e:
         print(f"Wiki Error: {e}")
     return None
@@ -216,15 +225,14 @@ def fetch_image(word):
 
 
 def fetch_sentence_translation(text):
-    """Перевод предложения через Google Translate (unofficial)"""
+    """
+    Перевод текста (для предложений и тултипов).
+    БЕЗ кэша - всегда делает запрос к API.
+    """
     text = text.strip()
     if not text: return ""
 
-    if text in SENTENCE_CACHE:
-        return SENTENCE_CACHE[text]
-
     try:
-        # Используем публичный API Google Translate
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
@@ -236,11 +244,9 @@ def fetch_sentence_translation(text):
         resp = requests.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            # Собираем перевод из частей
             translated_text = "".join([item[0] for item in data[0] if item[0]])
-            SENTENCE_CACHE[text] = translated_text
             return translated_text
     except Exception as e:
-        print(f"Sentence Trans Error: {e}")
+        print(f"Translation Error: {e}")
 
     return None

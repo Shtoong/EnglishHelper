@@ -5,12 +5,14 @@ CONFIG_FILE = "settings.ini"
 DATA_DIR = "Data"
 IMG_DIR = os.path.join(DATA_DIR, "Images")
 DICT_DIR = os.path.join(DATA_DIR, "Dicts")
+AUDIO_DIR = os.path.join(DATA_DIR, "Audio")
 VOCAB_FILE = os.path.join(DATA_DIR, "vocab_10k.txt")
 
 # Создаем папки, если нет
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(DICT_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
 
 DEFAULT_CONFIG = {
     "API": {

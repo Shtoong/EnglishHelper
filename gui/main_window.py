@@ -10,7 +10,7 @@ import time
 
 from playsound import playsound
 
-from config import cfg
+from config import cfg, AUDIO_DIR
 from gui.styles import COLORS, FONTS
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
@@ -342,7 +342,7 @@ class MainWindow(tk.Tk):
     def _worker_tooltip_trans(self, text, x, y):
         trans = fetch_sentence_translation(text)
         if trans:
-            self.trans_cache[text] = trans
+            self.trans_cache[text] = trans  # Кэш В ПАМЯТИ для тултипов
             self.after(0, lambda: self.tooltip.update_text(trans))
 
     def on_synonym_click(self, word):
@@ -461,11 +461,9 @@ class MainWindow(tk.Tk):
 
     def _play_audio_worker(self, url: str):
         try:
-            audio_dir = os.path.join("Data", "Audio");
-            os.makedirs(audio_dir, exist_ok=True)
             filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
             if not filename.endswith(".mp3"): filename += ".mp3"
-            file_path = os.path.join(audio_dir, filename)
+            file_path = os.path.join(AUDIO_DIR, filename)
             if not os.path.exists(file_path):
                 resp = requests.get(url, timeout=10)
                 if resp.status_code == 200:
