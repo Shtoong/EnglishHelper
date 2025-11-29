@@ -28,6 +28,9 @@ if not exist ".venv\Lib\site-packages\requests" (
 echo Starting EnglishHelper...
 ".venv\Scripts\pythonw.exe" "main.pyw"
 
+:: ".venv\Scripts\python.exe" "main.pyw"
+:: pause
+
 if errorlevel 1 (
     echo ERROR: Program crashed
     pause
