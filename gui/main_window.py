@@ -18,8 +18,6 @@ from network import fetch_sentence_translation
 
 
 class ResizeGrip(tk.Label):
-    """Виджет-треугольник для изменения размера окна"""
-
     def __init__(self, parent, resize_callback, finish_callback, bg, fg):
         super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
         self.parent = parent
@@ -45,8 +43,6 @@ class ResizeGrip(tk.Label):
 
 
 class TranslationTooltip:
-    """Всплывающее окно с переводом и анимацией загрузки"""
-
     def __init__(self, parent):
         self.parent = parent
         self.tip_window = None
@@ -56,51 +52,39 @@ class TranslationTooltip:
         self.spinner_chars = ["|", "/", "-", "\\"]
 
     def _create_window(self, x, y):
-        if self.tip_window:
-            return
-
-        x += 15
+        if self.tip_window: return
+        x += 15;
         y += 15
-
         self.tip_window = tk.Toplevel(self.parent)
         self.tip_window.wm_overrideredirect(True)
         self.tip_window.wm_geometry(f"+{x}+{y}")
         self.tip_window.wm_attributes("-topmost", True)
-
         frame = tk.Frame(self.tip_window, bg=self.COLORS["bg_secondary"],
-                         highlightbackground=self.COLORS["text_accent"],
-                         highlightthickness=1)
+                         highlightbackground=self.COLORS["text_accent"], highlightthickness=1)
         frame.pack()
-
-        self.label = tk.Label(frame, text="", justify='left',
-                              bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"],
-                              font=("Segoe UI", 10), wraplength=300, padx=8, pady=4)
+        self.label = tk.Label(frame, text="", justify='left', bg=self.COLORS["bg_secondary"],
+                              fg=self.COLORS["text_main"], font=("Segoe UI", 10), wraplength=300, padx=8, pady=4)
         self.label.pack()
 
     def show_loading(self, x, y):
-        """Показывает спиннер загрузки"""
-        self.hide()
-        self._create_window(x, y)
+        self.hide();
+        self._create_window(x, y);
         self._animate(0)
 
     def show_text(self, text, x, y):
-        """Показывает готовый текст (сразу)"""
-        self.hide()
-        self._create_window(x, y)
+        self.hide();
+        self._create_window(x, y);
         self.label.config(text=text)
 
     def update_text(self, text):
-        """Обновляет текст в уже открытом окне (останавливая анимацию)"""
         if self.tip_window and self.label:
             self._stop_animation()
             self.label.config(text=text)
 
     def _animate(self, step):
         if not self.tip_window: return
-
         char = self.spinner_chars[step % len(self.spinner_chars)]
         self.label.config(text=f"{char} Translating...")
-
         self.animation_id = self.parent.after(100, lambda: self._animate(step + 1))
 
     def _stop_animation(self):
@@ -119,138 +103,127 @@ class TranslationTooltip:
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.COLORS = COLORS
+        self.COLORS = COLORS;
         self.FONTS = FONTS
-
-        self.overrideredirect(True)
+        self.overrideredirect(True);
         self.wm_attributes("-topmost", True)
-
-        x = cfg.get("USER", "WindowX", "100")
+        x = cfg.get("USER", "WindowX", "100");
         y = cfg.get("USER", "WindowY", "100")
-        w = cfg.get("USER", "WindowWidth", "400")
+        w = cfg.get("USER", "WindowWidth", "400");
         h = cfg.get("USER", "WindowHeight", "700")
-
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.configure(bg=self.COLORS["bg"])
-
         self.sources = {"trans": "wait", "img": "wait"}
-        self.dragging_allowed = False
+        self.dragging_allowed = False;
         self.popup = None
-        self.current_audio_urls = []
+        self.current_audio_urls = [None, None]
         self.current_image = None
-
         self.sent_window = SentenceWindow(self)
-
-        # --- Tooltip & Cache ---
         self.tooltip = TranslationTooltip(self)
-        self.trans_cache = {}
+        self.trans_cache = {};
         self.hover_timer = None
 
-        self._init_ui()
-        self._bind_events()
+        # Callback для поиска (будет установлен из main.pyw)
+        self.search_callback = None
 
-    # ---------------- UI ----------------
+        self._init_ui();
+        self._bind_events()
 
     def _init_ui(self):
         top_bar = tk.Frame(self, bg=self.COLORS["bg"], height=30)
         top_bar.pack(fill="x", pady=(5, 0))
-
         btn_close = tk.Label(top_bar, text="✕", font=("Arial", 12), bg=self.COLORS["bg"], fg=self.COLORS["close_btn"],
                              cursor="hand2")
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
-
         btn_settings = tk.Label(top_bar, text="⚙", font=("Arial", 14), bg=self.COLORS["bg"],
                                 fg=self.COLORS["text_faint"], cursor="hand2")
         btn_settings.pack(side="right", padx=5)
         btn_settings.bind("<Button-1>", lambda e: self.open_settings())
-
         self.lbl_word = tk.Label(self, text="English Helper", font=self.FONTS["header"], bg=self.COLORS["bg"],
                                  fg=self.COLORS["text_header"])
         self.lbl_word.pack(pady=(10, 5), anchor="center")
-
         phonetic_frame = tk.Frame(self, bg=self.COLORS["bg"])
         phonetic_frame.pack(anchor="center", pady=5)
-
         self.lbl_phonetic = tk.Label(phonetic_frame, text="", font=self.FONTS["phonetic"], bg=self.COLORS["bg"],
                                      fg=self.COLORS["text_phonetic"])
         self.lbl_phonetic.pack(side="left", padx=5)
-
         self.btn_audio_us = tk.Label(phonetic_frame, text="🔊 US", font=("Segoe UI", 9), bg=self.COLORS["button_bg"],
                                      fg=self.COLORS["text_main"], cursor="hand2", padx=5, pady=2)
         self.btn_audio_us.pack(side="left", padx=2)
         self.btn_audio_us.bind("<Button-1>", lambda e: self.play_audio(0))
-
         self.btn_audio_uk = tk.Label(phonetic_frame, text="🔊 UK", font=("Segoe UI", 9), bg=self.COLORS["button_bg"],
                                      fg=self.COLORS["text_main"], cursor="hand2", padx=5, pady=2)
         self.btn_audio_uk.pack(side="left", padx=2)
         self.btn_audio_uk.bind("<Button-1>", lambda e: self.play_audio(1))
-
         self.lbl_rus = tk.Label(self, text="Ready", font=("Segoe UI", 33), bg=self.COLORS["bg"],
                                 fg=self.COLORS["text_accent"], wraplength=380, justify="center")
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
-
         self.img_container = tk.Label(self, bg=self.COLORS["bg"])
         self.img_container.pack(pady=5)
-
         tk.Frame(self, height=1, bg=self.COLORS["separator"], width=360).pack(pady=5)
-
         scroll_container = tk.Frame(self, bg=self.COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
-
         self.canvas_scroll = tk.Canvas(scroll_container, bg=self.COLORS["bg"], highlightthickness=0)
         self.scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=self.canvas_scroll.yview)
-
         self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=self.COLORS["bg"])
         self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
         self.canvas_scroll.bind("<Configure>", self._on_canvas_configure)
-
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
-
         self.bottom_frame = tk.Frame(self, bg=self.COLORS["bg"])
         self.bottom_frame.pack(side="bottom", fill="x", padx=0, pady=0)
-
         slider_area = tk.Frame(self.bottom_frame, bg=self.COLORS["bg"])
         slider_area.pack(side="top", fill="x", padx=10, pady=(5, 0))
-
         tk.Label(slider_area, text="Vocab:", font=self.FONTS["ui"], bg=self.COLORS["bg"],
                  fg=self.COLORS["text_faint"]).pack(side="left")
-
         self.vocab_var = tk.IntVar(value=int(cfg.get("USER", "VocabLevel")))
-
         btn_minus = tk.Label(slider_area, text="<", font=("Consolas", 12, "bold"), bg=self.COLORS["bg"],
                              fg=self.COLORS["text_accent"], cursor="hand2")
         btn_minus.pack(side="left", padx=2)
         btn_minus.bind("<Button-1>", lambda e: self.change_level(-1))
-
         self.scale = tk.Scale(slider_area, from_=0, to=100, orient="horizontal", variable=self.vocab_var, showvalue=0,
                               bg=self.COLORS["bg"], troughcolor=self.COLORS["bg_secondary"],
                               activebackground=self.COLORS["text_accent"], bd=0, highlightthickness=0, length=150)
         self.scale.pack(side="left", padx=2, fill="x", expand=True)
-
         btn_plus = tk.Label(slider_area, text=">", font=("Consolas", 12, "bold"), bg=self.COLORS["bg"],
                             fg=self.COLORS["text_accent"], cursor="hand2")
         btn_plus.pack(side="left", padx=2)
         btn_plus.bind("<Button-1>", lambda e: self.change_level(1))
-
         self.lbl_lvl_val = tk.Label(slider_area, text=str(self.vocab_var.get()), font=("Segoe UI", 9, "bold"),
                                     bg=self.COLORS["bg"], fg=self.COLORS["text_header"])
         self.lbl_lvl_val.pack(side="left", padx=(5, 0))
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
+        # --- BOTTOM BAR ---
         status_bar = tk.Frame(self.bottom_frame, bg=self.COLORS["bg"])
         status_bar.pack(side="bottom", fill="x", pady=2)
-
         self.grip = ResizeGrip(status_bar, self.resize_window, self.save_size, self.COLORS["bg"],
                                self.COLORS["resize_grip"])
         self.grip.pack(side="right", anchor="se")
-
         self.lbl_status = tk.Label(status_bar, text="Waiting...", font=("Segoe UI", 7), bg=self.COLORS["bg"],
                                    fg=self.COLORS["text_faint"])
         self.lbl_status.pack(side="right", padx=5)
+
+        self.btn_toggle_sent = tk.Label(status_bar, text="👁", font=("Segoe UI", 10), bg=self.COLORS["bg"],
+                                        fg=self.COLORS["text_faint"], cursor="hand2")
+        self.btn_toggle_sent.pack(side="left", padx=10)
+        self.btn_toggle_sent.bind("<Button-1>", self.toggle_sentence_window)
+        self.btn_toggle_sent.bind("<Enter>", lambda e: self.btn_toggle_sent.config(fg=self.COLORS["text_accent"]))
+        self.btn_toggle_sent.bind("<Leave>", lambda e: self.btn_toggle_sent.config(fg=self.COLORS["text_faint"]))
+
+    def toggle_sentence_window(self, event=None):
+        current_state = cfg.get_bool("USER", "ShowSentenceWindow")
+        new_state = not current_state
+        cfg.set("USER", "ShowSentenceWindow", new_state)
+        if new_state:
+            self.sent_window.show()
+            self.btn_toggle_sent.config(text="👁", fg=self.COLORS["text_accent"])
+        else:
+            self.sent_window.hide()
+            self.btn_toggle_sent.config(text="👁‍🗨", fg=self.COLORS["text_faint"])
 
     def _bind_events(self):
         self.bind("<Button-1>", self.start_move)
@@ -278,14 +251,10 @@ class MainWindow(tk.Tk):
         else:
             self.scrollbar.pack_forget()
 
-    # --- HOVER TRANSLATION LOGIC ---
     def _on_text_enter(self, event, text):
-        # 1. Если есть в кэше - показываем мгновенно
         if text in self.trans_cache:
             self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
             return
-
-        # 2. Если нет - запускаем таймер
         if self.hover_timer: self.after_cancel(self.hover_timer)
         self.hover_timer = self.after(300, lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root))
 
@@ -299,7 +268,6 @@ class MainWindow(tk.Tk):
         if text in self.trans_cache:
             self.tooltip.show_text(self.trans_cache[text], x, y)
             return
-
         self.tooltip.show_loading(x, y)
         threading.Thread(target=self._worker_tooltip_trans, args=(text, x, y), daemon=True).start()
 
@@ -309,10 +277,14 @@ class MainWindow(tk.Tk):
             self.trans_cache[text] = trans
             self.after(0, lambda: self.tooltip.update_text(trans))
 
-    # ------------- UI DATA UPDATE -------------
+    def on_synonym_click(self, word):
+        """Вызывает внешний callback для поиска слова"""
+        if self.search_callback:
+            self.search_callback(word)
+
     def update_full_data_ui(self, full_data):
         for widget in self.scrollable_frame.winfo_children(): widget.destroy()
-        self.current_audio_urls = []
+        self.current_audio_urls = [None, None]
 
         if not full_data:
             tk.Label(self.scrollable_frame, text="No detailed data available", font=self.FONTS["definition"],
@@ -324,49 +296,79 @@ class MainWindow(tk.Tk):
         if phonetics:
             p_text = next((p["text"] for p in phonetics if p.get("text")), "")
             self.lbl_phonetic.config(text=p_text)
+
+            us_url = None;
+            uk_url = None
             for p in phonetics:
-                if p.get("audio"): self.current_audio_urls.append(p["audio"])
+                url = p.get("audio", "")
+                if "-us.mp3" in url:
+                    us_url = url
+                elif "-uk.mp3" in url:
+                    uk_url = url
+            if not us_url and not uk_url:
+                for p in phonetics:
+                    if p.get("audio"):
+                        if not us_url:
+                            us_url = p["audio"]
+                        elif not uk_url:
+                            uk_url = p["audio"]
+            self.current_audio_urls = [us_url, uk_url]
+
+            self.btn_audio_us.config(fg=self.COLORS["text_main"] if us_url else self.COLORS["text_faint"])
+            self.btn_audio_uk.config(fg=self.COLORS["text_main"] if uk_url else self.COLORS["text_faint"])
         else:
             self.lbl_phonetic.config(text="")
+            self.btn_audio_us.config(fg=self.COLORS["text_faint"])
+            self.btn_audio_uk.config(fg=self.COLORS["text_faint"])
 
         meanings = full_data.get("meanings", [])
         window_width = self.winfo_width() - 60
-
         for meaning in meanings:
             pos = meaning.get("partOfSpeech", "")
-            definitions = meaning.get("definitions", [])
-            synonyms = meaning.get("synonyms", [])
-
             pos_label = tk.Label(self.scrollable_frame, text=pos, font=self.FONTS["pos"], bg=self.COLORS["bg"],
                                  fg=self.COLORS["text_pos"], anchor="w")
             pos_label.pack(fill="x", pady=(10, 5))
 
+            definitions = meaning.get("definitions", [])
             for i, defn in enumerate(definitions, 1):
                 def_text = f"{i}. {defn.get('definition', '')}"
                 lbl_def = tk.Label(self.scrollable_frame, text=def_text, font=self.FONTS["definition"],
                                    bg=self.COLORS["bg"], fg=self.COLORS["text_main"], wraplength=window_width,
                                    justify="left", anchor="w")
                 lbl_def.pack(fill="x", padx=10, pady=2)
-
-                # HOVER
                 lbl_def.bind("<Enter>", lambda e, t=defn.get('definition', ''): self._on_text_enter(e, t))
                 lbl_def.bind("<Leave>", self._on_text_leave)
-
                 if defn.get("example"):
                     ex_text = f'   "{defn["example"]}"'
                     lbl_ex = tk.Label(self.scrollable_frame, text=ex_text, font=self.FONTS["example"],
                                       bg=self.COLORS["bg"], fg=self.COLORS["text_accent"], wraplength=window_width,
                                       justify="left", anchor="w")
                     lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
-
-                    # HOVER
                     lbl_ex.bind("<Enter>", lambda e, t=defn.get("example", ""): self._on_text_enter(e, t))
                     lbl_ex.bind("<Leave>", self._on_text_leave)
 
+            # --- СИНОНИМЫ (ТЕГИ) ---
+            synonyms = meaning.get("synonyms", [])
             if synonyms:
-                tk.Label(self.scrollable_frame, text="Syn: " + ", ".join(synonyms), font=self.FONTS["synonym"],
-                         bg=self.COLORS["bg"], fg=self.COLORS["text_synonym"], wraplength=window_width, justify="left",
-                         anchor="w").pack(fill="x", padx=10, pady=(5, 5))
+                syn_frame = tk.Frame(self.scrollable_frame, bg=self.COLORS["bg"])
+                syn_frame.pack(fill="x", padx=10, pady=(5, 10))
+                tk.Label(syn_frame, text="Syn:", font=("Segoe UI", 9, "bold"), bg=self.COLORS["bg"],
+                         fg=self.COLORS["text_faint"]).pack(side="left", anchor="n")
+
+                for syn in synonyms[:5]:
+                    # Создаем тег
+                    tag = tk.Label(syn_frame, text=syn, font=("Segoe UI", 8), bg=self.COLORS["bg_secondary"],
+                                   fg=self.COLORS["text_main"], padx=6, pady=2, cursor="hand2")
+                    tag.pack(side="left", padx=3)
+
+                    # Ховер (цвет + тултип)
+                    tag.bind("<Enter>", lambda e, t=syn, w=tag:
+                    (self._on_text_enter(e, t), w.config(bg=self.COLORS["text_accent"], fg=self.COLORS["bg"]))[1])
+                    tag.bind("<Leave>", lambda e, w=tag:
+                    (self._on_text_leave(e), w.config(bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_main"]))[1])
+
+                    # КЛИК -> ПОИСК
+                    tag.bind("<Button-1>", lambda e, w=syn: self.on_synonym_click(w))
 
             tk.Frame(self.scrollable_frame, height=1, bg=self.COLORS["separator"], width=360).pack(pady=5)
 
@@ -426,7 +428,7 @@ class MainWindow(tk.Tk):
                 if h_size > 250: h_size = 250; w_percent = h_size / float(pil_img.size[1]); base_width = int(
                     float(pil_img.size[0]) * float(w_percent))
                 try:
-                    resample = Image.Resampling.LANCZOS
+                    resample = Image.Resampling.BILINEAR
                 except AttributeError:
                     resample = Image.ANTIALIAS
                 pil_img = pil_img.resize((base_width, h_size), resample)
@@ -445,7 +447,7 @@ class MainWindow(tk.Tk):
         self.lbl_phonetic.config(text="");
         self.lbl_rus.config(text="Loading...");
         self.img_container.config(image="")
-        self.current_audio_urls = [];
+        self.current_audio_urls = [None, None];
         for widget in self.scrollable_frame.winfo_children(): widget.destroy()
         self.sources = {"trans": "...", "img": "..."};
         self.refresh_status()

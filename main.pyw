@@ -4,7 +4,7 @@ import re
 import ctypes
 import tkinter as tk
 import time
-import pyperclip  # pip install pyperclip
+import pyperclip
 
 from config import cfg
 from vocab import init_vocab, is_word_too_simple
@@ -13,7 +13,8 @@ from network import (
     fetch_image,
     fetch_sentence_translation,
     fetch_full_dictionary_data,
-    load_full_dictionary_data
+    load_full_dictionary_data,
+    check_cache_only
 )
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
@@ -30,10 +31,7 @@ RU_TO_EN = {
     )
 }
 
-# Таймер для отложенного перевода предложений
 TRANSLATION_TIMER = None
-
-# Для контроля повторов из буфера обмена
 CLIPBOARD_LAST_WORD = ""
 
 
@@ -46,9 +44,6 @@ def is_english_layout():
         return ((layout_id & 0xFFFF) & 0x3FF) == 0x09
     except:
         return True
-
-
-# --- WORKERS (СЛОВА) ---
 
 
 def worker_trans(tgt, app):
@@ -67,34 +62,35 @@ def worker_img(tgt, app):
 
 
 def worker_full_data_display(tgt, app):
-    """Загружает полные данные (фонетика, примеры) и обновляет UI"""
-    # 1. Пробуем загрузить из кэша
     full_data = load_full_dictionary_data(tgt)
-
-    # 2. Если кэша нет (None) - скачиваем
     if full_data is None:
         fetch_full_dictionary_data(tgt)
-        # Даем небольшую паузу на запись файла
-        time.sleep(0.1)
         full_data = load_full_dictionary_data(tgt)
 
-    # 3. Если данные есть - авто-плей аудио (опционально)
     if full_data:
         try:
             if cfg.get_bool("USER", "AutoPronounce"):
                 phonetics = full_data.get("phonetics", [])
                 audio_url = None
-                # Приоритет US
+
+                # СТРАТЕГИЯ: US > Non-UK > Any
                 for p in phonetics:
-                    if p.get("audio") and "-us.mp3" in p["audio"]:
-                        audio_url = p["audio"]
+                    url = p.get("audio", "")
+                    if url and "-us.mp3" in url.lower():
+                        audio_url = url
                         break
-                # Если нет US, берем любой
+                if not audio_url:
+                    for p in phonetics:
+                        url = p.get("audio", "")
+                        if url and "-uk.mp3" not in url.lower() and "-au.mp3" not in url.lower():
+                            audio_url = url
+                            break
                 if not audio_url:
                     for p in phonetics:
                         if p.get("audio"):
                             audio_url = p["audio"]
                             break
+
                 if audio_url:
                     threading.Thread(
                         target=app._play_audio_worker, args=(audio_url,), daemon=True
@@ -102,11 +98,7 @@ def worker_full_data_display(tgt, app):
         except Exception as e:
             print(f"Auto-play error: {e}")
 
-    # 4. Обновляем UI
     app.after(0, lambda: app.update_full_data_ui(full_data))
-
-
-# --- ЛОГИКА СЛОВАРЯ (ОДИНОЧНЫЕ СЛОВА) ---
 
 
 def process_word_parallel(w, app):
@@ -116,61 +108,45 @@ def process_word_parallel(w, app):
 
     app.after(0, lambda: app.reset_ui(tgt))
 
-    # Запускаем потоки
-    threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
+    cached_res = check_cache_only(tgt)
+    if cached_res:
+        app.update_trans_ui(cached_res, "Cache")
+    else:
+        threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
+
     threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()
     threading.Thread(target=worker_full_data_display, args=(tgt, app), daemon=True).start()
 
 
-# --- ОБРАБОТКА БУФЕРА ОБМЕНА (Ctrl+C) ---
-
-
 def handle_clipboard_word(app):
     global CLIPBOARD_LAST_WORD
-
-    # ВАЖНО: Ждем 0.1с, чтобы Windows успела обновить буфер после нажатия Ctrl+C
-    # Иначе мы прочитаем старое значение, которое было ДО копирования.
     time.sleep(0.1)
-
     try:
         text = pyperclip.paste()
     except Exception:
         return
 
-    if not text:
-        return
-
+    if not text: return
     text = text.strip()
 
-    # Валидация: длина до 50, только англ буквы, дефис, апостроф
-    if not (0 < len(text) <= 50):
-        return
-    if not re.match(r"^[a-zA-Z\-']+$", text):
-        return
+    if not (0 < len(text) <= 50): return
+    if not re.match(r"^[a-zA-Z\-']+$", text): return
 
     lowered = text.lower()
-    if lowered == CLIPBOARD_LAST_WORD:
-        return
+    if lowered == CLIPBOARD_LAST_WORD: return
 
     CLIPBOARD_LAST_WORD = lowered
-
-    # Запускаем обработку (как будто набрали на клавиатуре)
     threading.Thread(
         target=process_word_parallel, args=(text, app), daemon=True
     ).start()
 
 
-# --- ГЛАВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ UI (ПРЕДЛОЖЕНИЯ) ---
-
-
 def trigger_sentence_update(app):
     global TRANSLATION_TIMER
 
-    # 1. Мгновенно обновляем английский текст
     eng_display = EDITOR.get_text_with_cursor()
     app.after_idle(lambda: app.sent_window.lbl_eng.config(text=eng_display))
 
-    # 2. Отложенный перевод (Debounce)
     if TRANSLATION_TIMER is not None:
         TRANSLATION_TIMER.cancel()
 
@@ -188,18 +164,16 @@ def trigger_sentence_update(app):
                 lambda: app.sent_window.lbl_rus.config(text="..."),
             )
 
-    TRANSLATION_TIMER = threading.Timer(0.6, delayed_translation_task)
+    TRANSLATION_TIMER = threading.Timer(0.35, delayed_translation_task)
     TRANSLATION_TIMER.start()
-
-
-# --- KEYBOARD HOOK ---
 
 
 def on_key_event(e):
     global BUFFER, SENTENCE_FINISHED
-    if e.event_type == "down":
-        return
-    if not is_english_layout():
+    if e.event_type == "down": return
+    if not is_english_layout(): return
+
+    if keyboard.is_pressed('ctrl') or keyboard.is_pressed('alt'):
         return
 
     key = e.name
@@ -209,12 +183,8 @@ def on_key_event(e):
 
     update_needed = False
 
-    # 1. СИМВОЛЫ
     if len(key) == 1:
-        if (
-                SENTENCE_FINISHED
-                and key not in [" ", ".", "!", "?", ","]
-        ):
+        if (SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]):
             EDITOR.clear()
             SENTENCE_FINISHED = False
             update_needed = True
@@ -235,7 +205,6 @@ def on_key_event(e):
             if key in [".", "!", "?"]:
                 SENTENCE_FINISHED = True
 
-    # 2. ПРОБЕЛ
     elif key_lower == "space":
         EDITOR.insert(" ")
         update_needed = True
@@ -247,12 +216,10 @@ def on_key_event(e):
             ).start()
             BUFFER = ""
 
-    # 3. УДАЛЕНИЕ
     elif key_lower == "backspace":
         EDITOR.backspace()
         update_needed = True
-        if BUFFER:
-            BUFFER = BUFFER[:-1]
+        if BUFFER: BUFFER = BUFFER[:-1]
         SENTENCE_FINISHED = False
 
     elif key_lower == "delete":
@@ -260,7 +227,6 @@ def on_key_event(e):
         update_needed = True
         SENTENCE_FINISHED = False
 
-    # 4. НАВИГАЦИЯ
     elif key_lower == "left":
         EDITOR.move_left()
         update_needed = True
@@ -277,10 +243,12 @@ if __name__ == "__main__":
     init_vocab()
     APP = MainWindow()
 
+    # --- СВЯЗЫВАЕМ КЛИК ПО СИНОНИМУ С ПОИСКОМ ---
+    APP.search_callback = lambda w: threading.Thread(
+        target=process_word_parallel, args=(w, APP), daemon=True
+    ).start()
+
     APP.hook_func = on_key_event
     keyboard.hook(on_key_event)
-
-    # Хоткей для буфера обмена (теперь с задержкой)
     keyboard.add_hotkey("ctrl+c", lambda: handle_clipboard_word(APP))
-
     APP.mainloop()

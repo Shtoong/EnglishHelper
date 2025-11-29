@@ -1,11 +1,9 @@
 import tkinter as tk
-from config import cfg
 from gui.styles import COLORS, FONTS
+from config import cfg
 
 
 class ResizeGrip(tk.Label):
-    """Виджет-треугольник для изменения размера окна"""
-
     def __init__(self, parent, resize_callback, finish_callback, bg, fg):
         super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
         self.parent = parent
@@ -31,118 +29,115 @@ class ResizeGrip(tk.Label):
 
 
 class SentenceWindow(tk.Toplevel):
-    def __init__(self, master):
-        super().__init__(master)
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.COLORS = COLORS
+
         self.overrideredirect(True)
         self.wm_attributes("-topmost", True)
-        self.configure(bg=COLORS["bg"])
+        self.configure(bg=self.COLORS["bg_secondary"])
 
-        # Загружаем сохраненные координаты и размеры
-        x = cfg.get("USER", "SentWindowX", "500")
-        y = cfg.get("USER", "SentWindowY", "500")
         w = cfg.get("USER", "SentWindowWidth", "600")
-        h = cfg.get("USER", "SentWindowHeight", "200")
-
+        h = cfg.get("USER", "SentWindowHeight", "120")
+        x = cfg.get("USER", "SentWindowX", "100")
+        y = cfg.get("USER", "SentWindowY", "600")
         self.geometry(f"{w}x{h}+{x}+{y}")
 
-        self.dragging_allowed = False
-        self.COLORS = COLORS
-        self.FONTS = FONTS
+        # --- UI ---
+        self.top_bar = tk.Frame(self, bg=self.COLORS["bg_secondary"], height=15, cursor="fleur")
+        self.top_bar.pack(fill="x", side="top")
 
-        self._init_ui()
-        self._bind_events()
+        self.btn_close = tk.Label(self.top_bar, text="✕", font=("Arial", 10), bg=self.COLORS["bg_secondary"],
+                                  fg=self.COLORS["text_faint"], cursor="hand2")
+        self.btn_close.pack(side="right", padx=5)
+        self.btn_close.bind("<Button-1>", self.hide_window)
 
-        # Скрываем, если так настроено
+        self.content_frame = tk.Frame(self, bg=self.COLORS["bg_secondary"])
+        self.content_frame.pack(fill="both", expand=True, padx=15, pady=0)
+
+        self.lbl_eng = tk.Label(
+            self.content_frame,
+            text="",
+            font=("Consolas", 12),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_main"],
+            wraplength=580,
+            justify="left",
+            anchor="w"
+        )
+        self.lbl_eng.pack(pady=(5, 5), fill="x")
+
+        self.lbl_rus = tk.Label(
+            self.content_frame,
+            text="...",
+            font=("Segoe UI", 22),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_accent"],
+            wraplength=580,
+            justify="left",
+            anchor="w"
+        )
+        self.lbl_rus.pack(pady=(0, 5), fill="x")
+
+        self.bottom_bar = tk.Frame(self, bg=self.COLORS["bg_secondary"], height=15)
+        self.bottom_bar.pack(side="bottom", fill="x")
+
+        self.grip = ResizeGrip(self.bottom_bar, self.resize_window, self.save_size, self.COLORS["bg_secondary"],
+                               self.COLORS["text_faint"])
+        self.grip.pack(side="right", anchor="se")
+
+        # --- DRAG & DROP LOGIC ---
+        self.dragging = False
+        self.drag_x = 0
+        self.drag_y = 0
+
+        # Привязываем перетаскивание КО ВСЕМУ (кроме кнопки и грипа)
+        for widget in [self, self.top_bar, self.content_frame, self.lbl_eng, self.lbl_rus, self.bottom_bar]:
+            widget.bind("<Button-1>", self.start_move)
+            widget.bind("<B1-Motion>", self.do_move)
+            widget.bind("<ButtonRelease-1>", self.stop_move)
+
         if not cfg.get_bool("USER", "ShowSentenceWindow"):
             self.withdraw()
 
-    def _init_ui(self):
-        # Основной контейнер
-        self.content_frame = tk.Frame(self, bg=self.COLORS["bg"])
-        self.content_frame.pack(fill="both", expand=True, padx=10, pady=5)
+    def start_move(self, event):
+        self.dragging = True
+        self.drag_x = event.x
+        self.drag_y = event.y
 
-        self.lbl_eng = tk.Label(self.content_frame, text="", font=("Consolas", 12),
-                                bg=self.COLORS["bg"], fg=self.COLORS["text_main"],
-                                justify="left", anchor="w")
-        self.lbl_eng.pack(pady=(5, 5), fill="x")
+    def do_move(self, event):
+        if self.dragging:
+            # Рассчитываем смещение относительно экрана, а не виджета
+            x = self.winfo_x() + (event.x - self.drag_x)
+            y = self.winfo_y() + (event.y - self.drag_y)
+            self.geometry(f"+{x}+{y}")
 
-        tk.Frame(self.content_frame, height=1, bg=self.COLORS["separator"]).pack(fill="x", pady=5)
+    def stop_move(self, event):
+        self.dragging = False
+        cfg.set("USER", "SentWindowX", self.winfo_x())
+        cfg.set("USER", "SentWindowY", self.winfo_y())
 
-        self.lbl_rus = tk.Label(self.content_frame, text="...", font=("Segoe UI", 33),
-                                bg=self.COLORS["bg"], fg=self.COLORS["text_accent"],
-                                justify="left", anchor="w")
-        self.lbl_rus.pack(pady=(5, 0), fill="x")
-
-        # Нижняя панель для Grip
-        self.bottom_frame = tk.Frame(self, bg=self.COLORS["bg"], height=15)
-        self.bottom_frame.pack(side="bottom", fill="x")
-
-        self.grip = ResizeGrip(self.bottom_frame, self.resize_window, self.save_size,
-                               self.COLORS["bg"], self.COLORS["resize_grip"])
-        self.grip.pack(side="right", anchor="se", padx=0, pady=0)
-
-    def _bind_events(self):
-        self.bind("<Button-1>", self.start_move)
-        self.bind("<B1-Motion>", self.do_move)
-        self.bind("<ButtonRelease-1>", self.stop_move)
-
-        # ВАЖНО: Следим за изменением размера окна системой
-        self.bind("<Configure>", self._on_configure)
-
-    def _on_configure(self, event):
-        """Автоматически обновляет перенос строк при изменении ширины"""
-        # Проверяем, что событие от самого окна, а не от внутренних виджетов
-        if event.widget == self:
-            new_width = event.width
-            text_wrap = new_width - 30  # Отступ для красоты
-            if text_wrap < 100: text_wrap = 100
-
-            self.lbl_eng.config(wraplength=text_wrap)
-            self.lbl_rus.config(wraplength=text_wrap)
-
-    # --- RESIZE LOGIC ---
     def resize_window(self, dx, dy):
         new_w = self.winfo_width() + dx
         new_h = self.winfo_height() + dy
-
-        if new_w < 300: new_w = 300
-        if new_h < 100: new_h = 100
-
+        if new_w < 200: new_w = 200
+        if new_h < 50: new_h = 50
         self.geometry(f"{new_w}x{new_h}")
-
-        # Обновляем wrap сразу при перетаскивании грипа
-        text_wrap = new_w - 30
-        self.lbl_eng.config(wraplength=text_wrap)
-        self.lbl_rus.config(wraplength=text_wrap)
+        self.lbl_eng.config(wraplength=new_w - 20)
+        self.lbl_rus.config(wraplength=new_w - 20)
 
     def save_size(self):
         cfg.set("USER", "SentWindowWidth", self.winfo_width())
         cfg.set("USER", "SentWindowHeight", self.winfo_height())
 
-    # --- MOVE LOGIC ---
-    def start_move(self, event):
-        if event.widget == self.grip:
-            self.dragging_allowed = False
-            return
-        self.dragging_allowed = True
-        self.x = event.x
-        self.y = event.y
+    def hide_window(self, event=None):
+        self.withdraw()
+        cfg.set("USER", "ShowSentenceWindow", False)
 
-    def do_move(self, event):
-        if not self.dragging_allowed: return
-        x = self.winfo_x() + (event.x - self.x)
-        y = self.winfo_y() + (event.y - self.y)
-        self.geometry(f"+{x}+{y}")
-
-    def stop_move(self, event):
-        if self.dragging_allowed:
-            cfg.set("USER", "SentWindowX", self.winfo_x())
-            cfg.set("USER", "SentWindowY", self.winfo_y())
-        self.dragging_allowed = False
-
-    # --- VISIBILITY ---
     def show(self):
         self.deiconify()
+        cfg.set("USER", "ShowSentenceWindow", True)
 
     def hide(self):
         self.withdraw()
