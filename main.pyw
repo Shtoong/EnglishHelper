@@ -82,7 +82,7 @@ def is_english_layout():
         _layout_cache["is_english"] = is_en
         _layout_cache["last_check"] = current_time
         return is_en
-    except:
+    except Exception:
         return True
 
 
@@ -124,7 +124,7 @@ def _instant_auto_pronounce(word, app):
                 try:
                     playsound(cache_path)
                     return
-                except:
+                except Exception:
                     break
             time.sleep(0.1)
 
@@ -132,7 +132,7 @@ def _instant_auto_pronounce(word, app):
         url = get_google_tts_url(word, "us")
         streaming_play_and_cache(url, cache_path)
 
-    except:
+    except Exception:
         pass
 
 
@@ -174,7 +174,7 @@ def process_word_async(word, app):
 
 def process_word_parallel(w, app):
     """Параллельная обработка слова (перевод + изображение + словарь)"""
-    too_simple, tgt = is_word_too_simple(w, app.vocab_var.get())
+    too_simple, tgt = is_word_too_simple(w, int(app.vocab_var.get()))  # ← ИСПРАВЛЕНО
     if too_simple:
         return
 
@@ -211,7 +211,7 @@ def handle_clipboard_word(app):
 
     try:
         text = pyperclip.paste()
-    except:
+    except Exception:
         return
 
     if not text:
@@ -295,7 +295,7 @@ def on_key_event(e):
 
     # Обработка обычных символов
     if len(key) == 1:
-        if (SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]):
+        if SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]:
             EDITOR.clear()
             SENTENCE_FINISHED = False
             update_needed = True
