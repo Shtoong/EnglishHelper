@@ -34,22 +34,21 @@ class ResizeGrip(tk.Label):
         """Запоминаем начальную позицию в экранных координатах"""
         self._x = event.x_root
         self._y = event.y_root
-        return "break"  # Блокируем всплытие события (чтобы не срабатывало перемещение окна)
+        return "break"
 
     def _do_resize(self, event):
         """Изменяем размер на основе дельты в экранных координатах"""
         dx = event.x_root - self._x
         dy = event.y_root - self._y
         self.resize_callback(dx, dy)
-        # Обновляем базовую точку для следующего шага
         self._x = event.x_root
         self._y = event.y_root
-        return "break"  # Блокируем всплытие
+        return "break"
 
     def _stop_resize(self, event):
         """Завершаем изменение размера и сохраняем"""
         self.finish_callback()
-        return "break"  # Блокируем всплытие
+        return "break"
 
 
 class TranslationTooltip:
@@ -155,6 +154,9 @@ class MainWindow(tk.Tk):
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.configure(bg=COLORS["bg"])
 
+        # Установка минимального размера окна
+        self.minsize(self.MIN_WINDOW_WIDTH, self.MIN_WINDOW_HEIGHT)
+
         # Состояние
         self.sources = {"trans": "wait", "img": "wait"}
         self.dragging_allowed = False
@@ -172,7 +174,7 @@ class MainWindow(tk.Tk):
         self._init_ui()
         self._bind_events()
         self._sync_initial_state()
-        self.update_cache_button()  # НОВОЕ: первоначальный расчет размера кэша
+        self.update_cache_button()
 
     @property
     def content_width(self) -> int:
@@ -270,8 +272,12 @@ class MainWindow(tk.Tk):
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
 
     def _create_image_container(self):
-        """Контейнер для изображения"""
-        self.img_container = tk.Label(self, bg=COLORS["bg"])
+        """ИСПРАВЛЕНО: Контейнер для изображения БЕЗ фиксированной высоты"""
+        self.img_container = tk.Label(
+            self,
+            bg=COLORS["bg"]
+            # УДАЛЕНО: height=8
+        )
         self.img_container.pack(pady=5)
 
     def _create_separator(self):
@@ -415,18 +421,18 @@ class MainWindow(tk.Tk):
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-        # НОВАЯ КНОПКА: Очистка кэша
+        # Кнопка очистки кэша
         self.btn_cache = self._create_toggle_button(
             status_bar,
             "Cache --",
             self.clear_cache,
-            None  # Не привязана к config
+            None
         )
         self.btn_cache.pack(side="left", padx=(0, 10))
 
     def _create_toggle_button(self, parent, text: str, command: Callable,
                               config_key: Optional[str]) -> tk.Label:
-        """ОБНОВЛЕНО: Создает кнопку-переключатель с hover эффектом"""
+        """Создает кнопку-переключатель с hover эффектом"""
         btn = tk.Label(
             parent,
             text=text,
@@ -445,7 +451,7 @@ class MainWindow(tk.Tk):
             btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
         def on_leave(e):
-            if config_key:  # НОВОЕ: проверка наличия config_key
+            if config_key:
                 self._update_toggle_button_style(btn, config_key)
             else:
                 btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
@@ -454,7 +460,7 @@ class MainWindow(tk.Tk):
         btn.bind("<Leave>", on_leave)
 
         # Установить начальный стиль
-        if config_key:  # НОВОЕ: проверка наличия config_key
+        if config_key:
             self._update_toggle_button_style(btn, config_key)
         else:
             btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
@@ -483,7 +489,6 @@ class MainWindow(tk.Tk):
 
     def _sync_initial_state(self):
         """Синхронизация UI с настройками при запуске"""
-        # Окно предложений - явная синхронизация состояния
         if cfg.get_bool("USER", "ShowSentenceWindow", True):
             self.sent_window.deiconify()
         else:
@@ -492,7 +497,7 @@ class MainWindow(tk.Tk):
     # ===== CACHE MANAGEMENT =====
 
     def update_cache_button(self):
-        """НОВОЕ: Запускает параллельный подсчет размера кэша"""
+        """Запускает параллельный подсчет размера кэша"""
         if self._cache_update_scheduled:
             return
         self._cache_update_scheduled = True
@@ -502,11 +507,10 @@ class MainWindow(tk.Tk):
         ).start()
 
     def _worker_update_cache_size(self):
-        """НОВОЕ: Worker для подсчета размера кэша"""
+        """Worker для подсчета размера кэша"""
         from config import get_cache_size_mb
         size_mb = get_cache_size_mb()
 
-        # Адаптивное форматирование
         if size_mb >= 1000:
             text = f"Cache {size_mb / 1024:.1f}G"
         else:
@@ -516,8 +520,7 @@ class MainWindow(tk.Tk):
         self._cache_update_scheduled = False
 
     def clear_cache(self, event=None):
-        """НОВОЕ: Очищает кэш и обновляет кнопку"""
-        # Визуальный feedback
+        """Очищает кэш и обновляет кнопку"""
         self.btn_cache.config(text="Clearing...")
 
         threading.Thread(
@@ -526,15 +529,13 @@ class MainWindow(tk.Tk):
         ).start()
 
     def _worker_clear_cache(self):
-        """НОВОЕ: Worker для удаления файлов кэша"""
+        """Worker для удаления файлов кэша"""
         from config import clear_cache
         deleted_count = clear_cache()
 
-        # Показываем результат на 1 секунду
         self.after(0, lambda: self.btn_cache.config(text=f"Cleared ({deleted_count})"))
         time.sleep(1)
 
-        # Обновляем размер после очистки
         self.after(0, lambda: self.update_cache_button())
         print(f"Cache cleared: {deleted_count} files deleted")
 
@@ -567,12 +568,10 @@ class MainWindow(tk.Tk):
 
     def _on_text_enter(self, event, text: str):
         """Обработка наведения на текст"""
-        # Показываем сразу если есть в кэше
         if text in self.trans_cache:
             self.tooltip.show_text(self.trans_cache[text], event.x_root, event.y_root)
             return
 
-        # Иначе показываем с задержкой
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
         self.hover_timer = self.after(
@@ -629,13 +628,18 @@ class MainWindow(tk.Tk):
             widget.destroy()
         self.current_audio_urls = [None, None]
 
-        if not full_data:
+        # Проверка наличия meanings
+        if not full_data or not full_data.get("meanings"):
             self._create_label(
                 self.scrollable_frame,
                 text="No detailed data available",
                 fg_key="text_faint"
             ).pack(pady=10)
             self.lbl_phonetic.config(text="")
+
+            # Скрываем кнопки аудио
+            self.btn_audio_us.config(fg=COLORS["text_faint"])
+            self.btn_audio_uk.config(fg=COLORS["text_faint"])
             return
 
         # Обработка фонетики и аудио
@@ -670,7 +674,6 @@ class MainWindow(tk.Tk):
 
     def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
         """Извлекает US и UK аудио URL с приоритетом"""
-        # Ищем специфичные варианты
         us = next(
             (p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")),
             None)
@@ -678,7 +681,6 @@ class MainWindow(tk.Tk):
             (p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")),
             None)
 
-        # Fallback: берем первые доступные
         if not us or not uk:
             available = [p["audio"] for p in phonetics if p.get("audio")]
             us = us or (available[0] if len(available) > 0 else None)
@@ -772,7 +774,6 @@ class MainWindow(tk.Tk):
             )
             tag.pack(side="left", padx=3)
 
-            # События
             tag.bind(
                 "<Enter>",
                 lambda e, t=syn, w=tag: self._on_synonym_enter(e, t, w)
@@ -803,9 +804,7 @@ class MainWindow(tk.Tk):
     def _play_audio_worker(self, url: str):
         """Worker для загрузки и воспроизведения аудио (для кнопок US/UK)"""
         try:
-            # Определяем путь кэша
             if "translate.google.com" in url:
-                # Google TTS - извлекаем слово и акцент
                 from urllib.parse import parse_qs, urlparse
                 parsed = urlparse(url)
                 params = parse_qs(parsed.query)
@@ -813,13 +812,11 @@ class MainWindow(tk.Tk):
                 accent = "us" if "en-US" in url else "uk"
                 cache_path = get_audio_cache_path(word, accent)
             else:
-                # dictionaryapi.dev - используем имя файла
                 filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
                 if not filename.endswith(".mp3"):
                     filename += ".mp3"
                 cache_path = os.path.join(AUDIO_DIR, filename)
 
-            # Скачиваем если нет
             if not os.path.exists(cache_path):
                 download_and_cache_audio(url, cache_path)
 
@@ -829,12 +826,8 @@ class MainWindow(tk.Tk):
             print(f"Audio Play Error: {e}")
 
     def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
-        """
-        Воспроизводит аудио из кэша для автопроизношения.
-        Если файла нет - ждет появления (параллельная загрузка) или скачивает.
-        """
+        """Воспроизводит аудио из кэша для автопроизношения"""
         try:
-            # Ждем появления файла максимум 3 секунды
             max_wait = 3.0
             waited = 0.0
             while not os.path.exists(cache_path) and waited < max_wait:
@@ -844,7 +837,6 @@ class MainWindow(tk.Tk):
             if os.path.exists(cache_path):
                 playsound(cache_path)
             else:
-                # Fallback: скачиваем синхронно
                 if download_and_cache_audio(fallback_url, cache_path):
                     playsound(cache_path)
         except Exception as e:
@@ -853,34 +845,43 @@ class MainWindow(tk.Tk):
     # ===== IMAGE HANDLER =====
 
     def update_img_ui(self, path: Optional[str], source: str):
-        """Обновление изображения"""
+        """ИСПРАВЛЕНО: Обновление изображения с компактным placeholder"""
         if path:
             try:
                 pil_img = Image.open(path)
 
-                # Вписываем в размер окна
                 max_width = self.winfo_width() - self.IMAGE_PADDING
                 pil_img.thumbnail((max_width, self.IMAGE_MAX_HEIGHT), Image.Resampling.BILINEAR)
 
-                # Конвертируем для Tkinter
                 tki = ImageTk.PhotoImage(pil_img)
                 self.img_container.config(
                     image=tki,
-                    width=pil_img.width,
-                    height=pil_img.height,
+                    text="",
+                    compound="center",
                     bg=COLORS["bg"]
                 )
                 self.img_container.image = tki
                 self.sources["img"] = source
             except Exception as e:
                 print(f"Img Error: {e}")
-                self.img_container.config(image="")
-                self.sources["img"] = "Err"
+                self._show_no_image_placeholder()
         else:
-            self.img_container.config(image="")
-            self.sources["img"] = "No"
+            self._show_no_image_placeholder()
 
         self.refresh_status()
+
+    def _show_no_image_placeholder(self):
+        """ИСПРАВЛЕНО: Компактный текстовый placeholder"""
+        self.img_container.config(
+            image="",
+            text="No image",
+            compound="center",
+            font=("Segoe UI", 9),
+            fg=COLORS["text_faint"],
+            bg=COLORS["bg"]
+            # УДАЛЕНО: width и height
+        )
+        self.sources["img"] = "—"
 
     # ===== STATUS =====
 
@@ -894,20 +895,41 @@ class MainWindow(tk.Tk):
         self.lbl_status.config(text=self.status_text)
 
     def update_trans_ui(self, data: Optional[Dict], source: str):
-        """Обновление перевода"""
-        if data:
-            self.lbl_rus.config(text=data["rus"])
+        """Обновление перевода с fallback"""
+        if data and data.get("rus"):
+            self.lbl_rus.config(
+                text=data["rus"],
+                fg=COLORS["text_accent"]
+            )
             self.sources["trans"] = source
         else:
-            self.sources["trans"] = "-"
+            current_word = self.lbl_word.cget("text")
+            if current_word and current_word != "English Helper":
+                self.lbl_rus.config(
+                    text=f"({current_word})",
+                    fg=COLORS["text_faint"]
+                )
+            else:
+                self.lbl_rus.config(
+                    text="No translation",
+                    fg=COLORS["text_faint"]
+                )
+            self.sources["trans"] = "—"
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """ОБНОВЛЕНО: Сброс UI для нового слова + обновление кэша"""
+        """Сброс UI для нового слова"""
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
-        self.lbl_rus.config(text="Loading...")
-        self.img_container.config(image="")
+        self.lbl_rus.config(
+            text="Loading...",
+            fg=COLORS["text_accent"]
+        )
+        self.img_container.config(
+            image="",
+            text="",
+            bg=COLORS["bg"]
+        )
         self.current_audio_urls = [None, None]
 
         for widget in self.scrollable_frame.winfo_children():
@@ -916,27 +938,21 @@ class MainWindow(tk.Tk):
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
 
-        # НОВОЕ: Обновляем размер кэша после каждого слова
+        self.lbl_rus.config(wraplength=self.winfo_width() - 20)
         self.update_cache_button()
 
     # ===== WINDOW CONTROLS =====
 
     def resize_window(self, dx: int, dy: int):
-        """Изменение размера окна с защитой от минимальных значений"""
-        # 1. Явно берем текущие координаты, чтобы зафиксировать окно на месте
+        """Изменение размера окна"""
         current_x = self.winfo_x()
         current_y = self.winfo_y()
 
         new_w = max(self.MIN_WINDOW_WIDTH, self.winfo_width() + dx)
         new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
 
-        # 2. Применяем размер И позицию одновременно.
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
-
-        # Обновляем wraplength для перевода
         self.lbl_rus.config(wraplength=new_w - 20)
-
-        # Принудительно обновляем прокручиваемую область
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
@@ -960,12 +976,11 @@ class MainWindow(tk.Tk):
         self._update_toggle_button_style(button, config_key)
 
     def toggle_sentence_window(self, event=None):
-        """Переключение окна предложений с явной синхронизацией"""
+        """Переключение окна предложений"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
         cfg.set("USER", "ShowSentenceWindow", new_state)
 
-        # Явная синхронизация состояния окна
         if new_state:
             self.sent_window.deiconify()
         else:
@@ -1024,12 +1039,10 @@ class MainWindow(tk.Tk):
         """Начало перемещения окна"""
         widget = event.widget
 
-        # Запрещаем драг для интерактивных элементов
         no_drag = (tk.Button, tk.Scale, tk.Scrollbar, tk.Entry)
         if isinstance(widget, no_drag) or widget == self.grip:
             return
 
-        # Проверяем cursor (кнопки)
         try:
             if widget.cget("cursor") == "hand2":
                 return

@@ -55,7 +55,8 @@ def worker_trans(tgt, app):
     app.after(
         0,
         lambda: app.update_trans_ui(
-            res, "API" if res and not res.get("cached") else "Cache"
+            res or {},
+            "API" if res and not res.get("cached") else "—"
         ),
     )
 
@@ -66,36 +67,41 @@ def worker_img(tgt, app):
 
 
 def worker_full_data_display(tgt, app):
+    """
+    ИСПРАВЛЕНО: Загрузка данных словаря + автопроизношение + обновление UI
+    """
+    # 1. Загружаем данные словаря (если есть)
     full_data = load_full_dictionary_data(tgt)
     if full_data is None:
         fetch_full_dictionary_data(tgt)
         full_data = load_full_dictionary_data(tgt)
 
-    if full_data:
-        try:
-            if cfg.get_bool("USER", "AutoPronounce"):
-                # НОВАЯ СТРАТЕГИЯ: всегда берем Google US
-                google_us_url = get_google_tts_url(tgt, "us")
-                cache_path = get_audio_cache_path(tgt, "us")
+    # 2. КРИТИЧНО: Обновляем UI данными словаря (даже если None)
+    app.after(0, lambda: app.update_full_data_ui(full_data))
 
-                # Если файла нет в кэше - скачиваем параллельно
-                if not os.path.exists(cache_path):
-                    threading.Thread(
-                        target=download_and_cache_audio,
-                        args=(google_us_url, cache_path),
-                        daemon=True
-                    ).start()
+    # 3. Автопроизношение ВСЕГДА (независимо от наличия данных)
+    try:
+        if cfg.get_bool("USER", "AutoPronounce"):
+            # Используем Google TTS US для любого слова
+            google_us_url = get_google_tts_url(tgt, "us")
+            cache_path = get_audio_cache_path(tgt, "us")
 
-                # Воспроизводим (параллельно с возможной загрузкой)
+            # Если файла нет в кэше - скачиваем параллельно
+            if not os.path.exists(cache_path):
                 threading.Thread(
-                    target=app._play_audio_worker_from_path,
-                    args=(cache_path, google_us_url),
+                    target=download_and_cache_audio,
+                    args=(google_us_url, cache_path),
                     daemon=True
                 ).start()
-        except Exception as e:
-            print(f"Auto-play error: {e}")
 
-    app.after(0, lambda: app.update_full_data_ui(full_data))
+            # Воспроизводим (параллельно с возможной загрузкой)
+            threading.Thread(
+                target=app._play_audio_worker_from_path,
+                args=(cache_path, google_us_url),
+                daemon=True
+            ).start()
+    except Exception as e:
+        print(f"Auto-play error: {e}")
 
 
 def process_word_parallel(w, app):
@@ -188,7 +194,7 @@ def on_key_event(e):
         key = RU_TO_EN[key_lower]
 
     update_needed = False
-    need_translate = False  # Флаг: нужно ли дергать переводчик
+    need_translate = False
 
     if len(key) == 1:
         if (SENTENCE_FINISHED and key not in [" ", ".", "!", "?", ","]):
@@ -202,7 +208,7 @@ def on_key_event(e):
         if re.match(r"^[a-zA-Z]$", key):
             BUFFER += key
         elif key in [" ", ".", ",", "!", "?"]:
-            need_translate = True  # <-- Разделитель
+            need_translate = True
             if BUFFER:
                 threading.Thread(
                     target=process_word_parallel,
@@ -216,7 +222,7 @@ def on_key_event(e):
     elif key_lower == "space":
         EDITOR.insert(" ")
         update_needed = True
-        need_translate = True  # <-- Пробел = перевод
+        need_translate = True
         if BUFFER:
             threading.Thread(
                 target=process_word_parallel,
@@ -228,7 +234,7 @@ def on_key_event(e):
     elif key_lower == "enter":
         EDITOR.insert("\n")
         update_needed = True
-        need_translate = True  # <-- Enter = перевод
+        need_translate = True
         SENTENCE_FINISHED = True
         if BUFFER:
             threading.Thread(
@@ -243,7 +249,6 @@ def on_key_event(e):
         update_needed = True
         if BUFFER: BUFFER = BUFFER[:-1]
         SENTENCE_FINISHED = False
-        # При удалении перевод НЕ вызываем, ждем разделителя
 
     elif key_lower == "delete":
         EDITOR.delete()

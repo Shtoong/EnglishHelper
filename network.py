@@ -161,11 +161,36 @@ def fetch_yandex_translation(word):
     return None
 
 
+def fetch_google_translation(word):
+    """
+    НОВОЕ: Fallback-перевод через Google Translate для редких слов
+    """
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "en",
+            "tl": "ru",
+            "dt": "t",
+            "q": word
+        }
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Собираем перевод из частей
+            translated_text = "".join([item[0] for item in data[0] if item[0]])
+            return translated_text.strip()
+    except Exception as e:
+        print(f"Google Translation Error: {e}")
+    return None
+
+
 def fetch_word_translation(word):
     """
-    Получает перевод слова.
-    Сначала ищет в кэше полных данных.
-    Если нет - пытается получить через API.
+    Получает перевод слова с многоуровневым fallback.
+    1. Кэш полных данных (Yandex)
+    2. API Yandex через fetch_full_dictionary_data
+    3. НОВОЕ: Google Translate как последний fallback
     """
     # 1. Пробуем загрузить из кэша полных данных
     full_data = load_full_dictionary_data(word)
@@ -177,7 +202,16 @@ def fetch_word_translation(word):
     if full_data and "rus" in full_data:
         return {"rus": full_data["rus"], "cached": False}
 
-    # 3. Если совсем ничего нет
+    # 3. НОВОЕ: Fallback на Google Translate
+    google_trans = fetch_google_translation(word)
+    if google_trans:
+        # Сохраняем в кэш для будущего использования
+        if full_data:
+            full_data["rus"] = google_trans
+            save_full_dictionary_data(word, full_data)
+        return {"rus": google_trans, "cached": False}
+
+    # 4. Если совсем ничего нет
     return None
 
 
