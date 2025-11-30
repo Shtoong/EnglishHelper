@@ -2,7 +2,6 @@ import threading
 import keyboard
 import re
 import ctypes
-import tkinter as tk
 import time
 import pyperclip
 import os
@@ -18,7 +17,6 @@ from network import (
     check_cache_only,
     get_google_tts_url,
     get_audio_cache_path,
-    download_and_cache_audio,
     streaming_play_and_cache,
     close_all_sessions
 )
@@ -179,7 +177,8 @@ def process_word_parallel(w, app):
     # Быстрая проверка кэша
     cached_res = check_cache_only(tgt)
     if cached_res:
-        app.update_trans_ui(cached_res, "Cache")
+        # КРИТИЧНО: Используем app.after() для thread safety
+        app.after(0, lambda: app.update_trans_ui(cached_res, "Cache"))
     else:
         threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
 
