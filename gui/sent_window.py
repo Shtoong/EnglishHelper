@@ -4,32 +4,44 @@ from gui.styles import COLORS, FONTS
 
 
 class ResizeGrip(tk.Label):
-    def __init__(self, parent, resize_callback, stop_callback, bg, fg):
+    def __init__(self, parent, resize_callback, finish_callback, bg, fg):
         super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
         self.resize_callback = resize_callback
-        self.stop_callback = stop_callback
+        self.finish_callback = finish_callback
+
+        # ВАЖНО: return "break" останавливает всплытие события к родительскому окну
         self.bind("<Button-1>", self._start_resize)
         self.bind("<B1-Motion>", self._do_resize)
         self.bind("<ButtonRelease-1>", self._stop_resize)
-        self._root_x = 0
-        self._root_y = 0
+
+        self._x = 0
+        self._y = 0
 
     def _start_resize(self, event):
-        self._root_x = event.x_root
-        self._root_y = event.y_root
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
 
     def _do_resize(self, event):
-        dx = event.x_root - self._root_x
-        dy = event.y_root - self._root_y
+        dx = event.x_root - self._x
+        dy = event.y_root - self._y
         self.resize_callback(dx, dy)
-        self._root_x = event.x_root
-        self._root_y = event.y_root
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
 
     def _stop_resize(self, event):
-        self.stop_callback()
+        self.finish_callback()
+        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
 
 
 class SentenceWindow(tk.Toplevel):
+    # Константы
+    MIN_WINDOW_WIDTH = 200
+    MIN_WINDOW_HEIGHT = 80
+    TEXT_PADDING = 30
+    MIN_WRAPLENGTH = 100
+
     def __init__(self, master):
         super().__init__(master)
         self.overrideredirect(True)
@@ -44,7 +56,7 @@ class SentenceWindow(tk.Toplevel):
         try:
             w_str = geo_str.split('x')[0]
             width = int(w_str)
-            initial_wrap = width - 30
+            initial_wrap = width - self.TEXT_PADDING
         except:
             pass
 
@@ -64,7 +76,7 @@ class SentenceWindow(tk.Toplevel):
                                 wraplength=initial_wrap)
         self.lbl_rus.pack(fill="x", padx=15, pady=(5, 10))
 
-        # Grip с callback-ом на сохранение
+        # Grip с callback-ом
         self.grip = ResizeGrip(self, self.resize_window, self.save_geometry, COLORS["bg"], COLORS["resize_grip"])
         self.grip.place(relx=1.0, rely=1.0, anchor="se")
 
@@ -72,13 +84,11 @@ class SentenceWindow(tk.Toplevel):
         self._x = 0
         self._y = 0
 
-        # Привязываем начало перемещения
+        # Привязываем начало перемещения к окну и лейблам
         for widget in [self, self.lbl_eng, self.lbl_rus, self.content_frame]:
             widget.bind("<Button-1>", self.start_move)
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<ButtonRelease-1>", self.stop_move)
-
-        self.bind("<Configure>", self.on_resize)
 
     def start_move(self, event):
         self._x = event.x
@@ -93,22 +103,27 @@ class SentenceWindow(tk.Toplevel):
         self.save_geometry()
 
     def resize_window(self, dx, dy):
-        new_w = self.winfo_width() + dx
-        new_h = self.winfo_height() + dy
-        if new_w < 200: new_w = 200
-        if new_h < 80: new_h = 80
-        self.geometry(f"{new_w}x{new_h}")
+        """Изменение размера окна"""
+        # 1. Явно берем текущие координаты, чтобы зафиксировать окно на месте
+        current_x = self.winfo_x()
+        current_y = self.winfo_y()
 
-    def on_resize(self, event):
-        if event.widget == self:
-            new_wrap = event.width - 30
-            if new_wrap < 100: new_wrap = 100
-            try:
-                if self.lbl_eng.cget("wraplength") != new_wrap:
-                    self.lbl_eng.config(wraplength=new_wrap)
-                    self.lbl_rus.config(wraplength=new_wrap)
-            except:
-                pass
+        # 2. Считаем новый размер
+        new_w = max(self.MIN_WINDOW_WIDTH, self.winfo_width() + dx)
+        new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
+
+        # 3. Применяем размер И позицию одновременно.
+        # Это гарантирует, что левый верхний угол гвоздями прибит к current_x, current_y
+        self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
+
+        # 4. Обновляем перенос текста
+        self.after_idle(lambda: self._update_wraplength(new_w))
+
+    def _update_wraplength(self, width):
+        new_wrap = max(self.MIN_WRAPLENGTH, width - self.TEXT_PADDING)
+        if self.lbl_eng.cget("wraplength") != new_wrap:
+            self.lbl_eng.config(wraplength=new_wrap)
+            self.lbl_rus.config(wraplength=new_wrap)
 
     def save_geometry(self, event=None):
         """Сохраняем текущее положение в файл"""

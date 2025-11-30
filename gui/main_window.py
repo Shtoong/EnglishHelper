@@ -31,16 +31,25 @@ class ResizeGrip(tk.Label):
         self._y = 0
 
     def _start_resize(self, event):
-        self._x = event.x
-        self._y = event.y
+        """Запоминаем начальную позицию в экранных координатах"""
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"  # Блокируем всплытие события (чтобы не срабатывало перемещение окна)
 
     def _do_resize(self, event):
-        dx = event.x - self._x
-        dy = event.y - self._y
+        """Изменяем размер на основе дельты в экранных координатах"""
+        dx = event.x_root - self._x
+        dy = event.y_root - self._y
         self.resize_callback(dx, dy)
+        # Обновляем базовую точку для следующего шага
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"  # Блокируем всплытие
 
     def _stop_resize(self, event):
+        """Завершаем изменение размера и сохраняем"""
         self.finish_callback()
+        return "break"  # Блокируем всплытие
 
 
 class TranslationTooltip:
@@ -586,8 +595,12 @@ class MainWindow(tk.Tk):
     def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
         """Извлекает US и UK аудио URL с приоритетом"""
         # Ищем специфичные варианты
-        us = next((p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")), None)
-        uk = next((p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")), None)
+        us = next(
+            (p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")),
+            None)
+        uk = next(
+            (p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")),
+            None)
 
         # Fallback: берем первые доступные
         if not us or not uk:
@@ -830,15 +843,21 @@ class MainWindow(tk.Tk):
     # ===== WINDOW CONTROLS =====
 
     def resize_window(self, dx: int, dy: int):
-        """Изменение размера окна"""
-        new_w = self.winfo_width() + dx
-        new_h = self.winfo_height() + dy
+        """Изменение размера окна с защитой от минимальных значений"""
+        # 1. Явно берем текущие координаты, чтобы зафиксировать окно на месте
+        current_x = self.winfo_x()
+        current_y = self.winfo_y()
 
-        new_w = max(self.MIN_WINDOW_WIDTH, new_w)
-        new_h = max(self.MIN_WINDOW_HEIGHT, new_h)
+        new_w = max(self.MIN_WINDOW_WIDTH, self.winfo_width() + dx)
+        new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
 
-        self.geometry(f"{new_w}x{new_h}")
+        # 2. Применяем размер И позицию одновременно.
+        self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
+
+        # Обновляем wraplength для перевода
         self.lbl_rus.config(wraplength=new_w - 20)
+
+        # Принудительно обновляем прокручиваемую область
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
