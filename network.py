@@ -34,26 +34,57 @@ except ImportError:
     PLAYSOUND_AVAILABLE = False
 
 
-# ===== LEMMATIZATION =====
+# ===== LEMMATIZATION WITH VOCAB PROTECTION =====
 
 @lru_cache(maxsize=2048)
-def lemmatize_word(word: str) -> str:
+def lemmatize_word_safe(word: str) -> str:
     """
-    Приводит слово к словарной форме (лемме) с кэшированием.
-    Кэш на 2048 слов покрывает 99% реальной печати (~50KB RAM).
-    Всегда возвращает lowercase строку.
+    Приводит слово к лемме с защитой топ-1000 от искажений.
+
+    Защита критична для высокочастотных слов:
+    - "this" без защиты → "thi" (ошибка lemminflect)
+    - "bus" без защиты → "bu"
+
+    Args:
+        word: Исходное слово (любой регистр)
+
+    Returns:
+        Лемматизированное слово в lowercase
+
+    Note:
+        Использует глобальный WORD_RANKS из vocab.py для проверки топ-1000.
+        Функция должна вызываться ПОСЛЕ init_vocab().
     """
+    word_lower = word.lower()
+
+    # Защита от circular import - импорт внутри функции
+    try:
+        from vocab import WORD_RANKS, TOP_WORDS_NO_LEMMA
+
+        # Защита топ-N слов от лемматизации
+        if word_lower in WORD_RANKS and WORD_RANKS[word_lower] < TOP_WORDS_NO_LEMMA:
+            return word_lower
+    except ImportError:
+        pass  # vocab еще не инициализирован - работаем без защиты
+
+    # Стандартная лемматизация
     if not LEMMATIZER_AVAILABLE or lemminflect is None:
-        return word.lower()
+        return word_lower
 
     try:
-        for pos in ['VERB', 'NOUN', 'ADJ', 'ADV']:
-            lemmas = lemminflect.getLemma(word.lower(), upos=pos)
-            if lemmas:
+        if len(word_lower) < 2:
+            return word_lower
+
+        # Приоритет: VERB → NOUN
+        for pos in ('VERB', 'NOUN'):
+            lemmas = lemminflect.getLemma(word_lower, upos=pos)
+            if lemmas and lemmas[0] != word_lower:
                 return lemmas[0]
-        return word.lower()
+
+        return word_lower
+
     except (AttributeError, ValueError, TypeError):
-        return word.lower()
+        return word_lower
 
 
 @lru_cache(maxsize=2048)
@@ -62,7 +93,7 @@ def get_safe_filename(word: str) -> str:
     Преобразует слово в безопасное имя файла.
     Кэшируется для избежания повторных вычислений.
     """
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
     return "".join(c for c in lemma if c.isalnum())
 
 
@@ -317,7 +348,7 @@ def fetch_full_dictionary_data(word):
     if cached and cached.get("meanings"):
         return cached
 
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{lemma}"
 
     # Запускаем кэширование US audio в фоне (не блокируем)
@@ -430,7 +461,7 @@ def fetch_yandex_translation(word):
     if not key:
         return None
 
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
     url = f"https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key={key}&lang=en-ru&text={lemma}"
     try:
         resp = session_google.get(url, timeout=3)
@@ -449,7 +480,7 @@ def fetch_yandex_translation(word):
 
 def fetch_google_translation(word):
     """Получает перевод из Google Translate"""
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
 
     try:
         url = "https://translate.googleapis.com/translate_a/single"
@@ -482,7 +513,7 @@ def fetch_word_translation(word):
 
     google_trans = fetch_google_translation(word)
     if google_trans:
-        lemma = lemmatize_word(word)
+        lemma = lemmatize_word_safe(word)
         if full_data:
             full_data["rus"] = google_trans
             save_full_dictionary_data(word, full_data)
@@ -556,7 +587,7 @@ def fetch_pexels_image(word):
     if not key:
         return None
 
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
     url = f"https://api.pexels.com/v1/search?query={lemma}&per_page=1"
     session_pexels.headers.update({"Authorization": key})
 
@@ -578,7 +609,7 @@ def fetch_wiki_image(word):
     if is_image_not_found(word):
         return None
 
-    lemma = lemmatize_word(word)
+    lemma = lemmatize_word_safe(word)
     url = f"https://en.wikipedia.org/w/api.php?action=query&titles={lemma}&prop=pageimages&format=json&pithumbsize={IMAGE_THUMBNAIL_SIZE}"
 
     blacklist = [
