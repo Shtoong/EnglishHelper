@@ -90,6 +90,10 @@ class SentenceWindow(tk.Toplevel):
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<ButtonRelease-1>", self.stop_move)
 
+        # НОВОЕ: Применяем начальное состояние видимости из настроек
+        if not cfg.get_bool("USER", "ShowSentenceWindow", True):
+            self.withdraw()
+
     def start_move(self, event):
         self._x = event.x
         self._y = event.y

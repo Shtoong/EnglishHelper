@@ -170,6 +170,7 @@ class MainWindow(tk.Tk):
 
         self._init_ui()
         self._bind_events()
+        self._sync_initial_state()  # НОВОЕ: синхронизация состояния при запуске
 
     @property
     def content_width(self) -> int:
@@ -461,6 +462,14 @@ class MainWindow(tk.Tk):
         self.scale.bind("<ButtonPress-1>", self.show_popup)
         self.scale.bind("<B1-Motion>", self.move_popup)
         self.scale.bind("<ButtonRelease-1>", self.hide_popup_and_save)
+
+    def _sync_initial_state(self):
+        """НОВОЕ: Синхронизация UI с настройками при запуске"""
+        # Окно предложений - явная синхронизация состояния
+        if cfg.get_bool("USER", "ShowSentenceWindow", True):
+            self.sent_window.deiconify()
+        else:
+            self.sent_window.withdraw()
 
     # ===== SCROLLBAR LOGIC =====
 
@@ -881,13 +890,18 @@ class MainWindow(tk.Tk):
         self._update_toggle_button_style(button, config_key)
 
     def toggle_sentence_window(self, event=None):
-        """Переключение окна предложений"""
-        self._toggle_setting(
-            "ShowSentenceWindow",
-            self.btn_toggle_sent,
-            on_enable=self.sent_window.deiconify,
-            on_disable=self.sent_window.withdraw
-        )
+        """ОБНОВЛЕНО: Переключение окна предложений с явной синхронизацией"""
+        current = cfg.get_bool("USER", "ShowSentenceWindow", True)
+        new_state = not current
+        cfg.set("USER", "ShowSentenceWindow", new_state)
+
+        # Явная синхронизация состояния окна
+        if new_state:
+            self.sent_window.deiconify()
+        else:
+            self.sent_window.withdraw()
+
+        self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
 
     def toggle_auto_pronounce(self, event=None):
         """Переключение автопроизношения"""
