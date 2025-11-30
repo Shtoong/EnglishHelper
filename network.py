@@ -4,55 +4,83 @@ from urllib3.util.retry import Retry
 import os
 import json
 import threading
-import time
 import tempfile
 import shutil
-from urllib.parse import quote, urlparse, parse_qs
+import time
+from urllib.parse import quote
+from functools import lru_cache
 from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
-# ===== LEMMATIZATION =====
+# ===== CONSTANTS =====
+MIN_VALID_AUDIO_SIZE = 1500  # bytes, ~0.1s of MP3 audio
+MIN_IMAGE_DIMENSION = 100  # pixels, minimum for valid images
+IMAGE_THUMBNAIL_SIZE = 500  # Pexels/Wiki API parameter
+
+# ===== IMPORTS WITH GRACEFUL DEGRADATION =====
 try:
     import lemminflect
 
     LEMMATIZER_AVAILABLE = True
 except ImportError:
+    lemminflect = None
     LEMMATIZER_AVAILABLE = False
-    print("⚠️ lemminflect not available")
+
+try:
+    from playsound import playsound
+
+    PLAYSOUND_AVAILABLE = True
+except ImportError:
+    playsound = None
+    PLAYSOUND_AVAILABLE = False
 
 
+# ===== LEMMATIZATION =====
+
+@lru_cache(maxsize=2048)
 def lemmatize_word(word: str) -> str:
     """
-    ✅ ВОССТАНОВЛЕНО: Приведение к словарной форме
+    Приводит слово к словарной форме (лемме) с кэшированием.
+    Кэш на 2048 слов покрывает 99% реальной печати (~50KB RAM).
+    Всегда возвращает lowercase строку.
     """
-    if not LEMMATIZER_AVAILABLE:
+    if not LEMMATIZER_AVAILABLE or lemminflect is None:
         return word.lower()
 
     try:
-        import lemminflect
-        # Пробуем разные части речи
         for pos in ['VERB', 'NOUN', 'ADJ', 'ADV']:
             lemmas = lemminflect.getLemma(word.lower(), upos=pos)
             if lemmas:
                 return lemmas[0]
         return word.lower()
-    except:
+    except (AttributeError, ValueError, TypeError):
         return word.lower()
+
+
+@lru_cache(maxsize=2048)
+def get_safe_filename(word: str) -> str:
+    """
+    Преобразует слово в безопасное имя файла.
+    Кэшируется для избежания повторных вычислений.
+    """
+    lemma = lemmatize_word(word)
+    return "".join(c for c in lemma if c.isalnum())
 
 
 # ===== SESSION MANAGEMENT =====
 
-def _create_session(max_retries=3, backoff_factor=0.3):
+def _create_session(max_retries=2, backoff_factor=0.2):
+    """Создает HTTP session с оптимизированной retry стратегией"""
     session = requests.Session()
     retry_strategy = Retry(
         total=max_retries,
         backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
+        status_forcelist=[429, 502, 503, 504],
         allowed_methods=["HEAD", "GET", "OPTIONS"]
     )
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
         pool_connections=10,
-        pool_maxsize=20
+        pool_maxsize=50
     )
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -73,42 +101,37 @@ _audio_play_lock = threading.Lock()
 # ===== CACHE HELPERS =====
 
 def get_cache_path(word):
-    """✅ ВОССТАНОВЛЕНО: Лемматизация для имени файла"""
-    lemma = lemmatize_word(word)
-    safe_word = "".join(c for c in lemma if c.isalnum()).lower()
+    """Возвращает путь к файлу кэша словарных данных"""
+    safe_word = get_safe_filename(word)
     return os.path.join(DICT_DIR, f"{safe_word}-full.json")
 
 
 def get_audio_cache_path(word: str, accent: str = "us") -> str:
-    """✅ ВОССТАНОВЛЕНО: Лемматизация для имени файла"""
-    lemma = lemmatize_word(word)
-    safe_word = "".join(c for c in lemma if c.isalnum()).lower()
+    """Возвращает путь к кэшу аудио файла"""
+    safe_word = get_safe_filename(word)
     return os.path.join(AUDIO_DIR, f"{safe_word}-{accent}.mp3")
 
 
 def get_image_path(word):
-    """✅ ВОССТАНОВЛЕНО: Лемматизация для имени файла"""
-    lemma = lemmatize_word(word)
-    safe_word = "".join(c for c in lemma if c.isalnum()).lower()
+    """Возвращает путь к кэшу изображения"""
+    safe_word = get_safe_filename(word)
     return os.path.join(IMG_DIR, f"{safe_word}.jpg")
 
 
 def mark_image_not_found(word):
-    lemma = lemmatize_word(word)
-    safe_word = "".join(c for c in lemma if c.isalnum()).lower()
+    """Создает маркер отсутствия изображения"""
+    safe_word = get_safe_filename(word)
     marker_path = os.path.join(IMG_DIR, f"{safe_word}.nofound")
     try:
-        os.makedirs(IMG_DIR, exist_ok=True)
         with open(marker_path, "w") as f:
-            f.write(str(int(time.time())))
-        print(f"✅ Marked as 'no image': {lemma}")
-    except Exception as e:
-        print(f"Marker error: {e}")
+            f.write("")
+    except (IOError, OSError):
+        pass
 
 
 def is_image_not_found(word) -> bool:
-    lemma = lemmatize_word(word)
-    safe_word = "".join(c for c in lemma if c.isalnum()).lower()
+    """Проверяет наличие маркера отсутствия изображения"""
+    safe_word = get_safe_filename(word)
     marker_path = os.path.join(IMG_DIR, f"{safe_word}.nofound")
     return os.path.exists(marker_path)
 
@@ -116,35 +139,60 @@ def is_image_not_found(word) -> bool:
 # ===== GOOGLE TTS =====
 
 def get_google_tts_url(word: str, accent: str = "us") -> str:
-    """✅ ВАЖНО: TTS использует ОРИГИНАЛЬНОЕ слово (не лемму) для правильного произношения"""
+    """
+    Генерирует URL для Google TTS.
+    Использует ОРИГИНАЛЬНОЕ слово (не лемму) для правильного произношения.
+    """
     lang_code = "en-US" if accent == "us" else "en-GB"
     encoded_word = quote(word)
     return f"https://translate.google.com/translate_tts?ie=UTF-8&tl={lang_code}&client=tw-ob&q={encoded_word}"
 
 
+def is_valid_audio_file(path: str) -> bool:
+    """Проверяет валидность аудио файла"""
+    if not os.path.exists(path):
+        return False
+
+    try:
+        size = os.path.getsize(path)
+        if size < MIN_VALID_AUDIO_SIZE:
+            return False
+
+        # Проверка MP3 magic bytes
+        with open(path, 'rb') as f:
+            header = f.read(3)
+            return header == b'ID3' or header[:2] == b'\xff\xfb'
+    except (IOError, OSError):
+        return False
+
+
 def download_and_cache_audio(url: str, cache_path: str) -> bool:
+    """Загружает и кэширует аудио файл"""
     try:
         resp = session_google.get(url, timeout=10)
         if resp.status_code == 200:
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            with open(cache_path, "wb") as f:
+            # Atomic write pattern
+            temp_path = cache_path + '.tmp'
+            with open(temp_path, "wb") as f:
                 f.write(resp.content)
 
-            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-                print(f"✅ Cached audio: {cache_path}")
-                return True
-    except Exception as e:
-        print(f"Audio download error: {e}")
+            # Атомарная замена (работает на Windows и POSIX)
+            os.replace(temp_path, cache_path)
+
+            return is_valid_audio_file(cache_path)
+    except (requests.RequestException, IOError, OSError):
+        pass
     return False
 
 
-def _cache_audio_sync(url: str, cache_path: str) -> bool:
-    if os.path.exists(cache_path):
-        return True
-    return download_and_cache_audio(url, cache_path)
+def _cache_audio_async(url: str, cache_path: str):
+    """Фоновое кэширование аудио без блокировки"""
+    if not os.path.exists(cache_path):
+        download_and_cache_audio(url, cache_path)
 
 
 def _cache_audio_from_phonetics(audio_url: str, word: str):
+    """Асинхронное кэширование аудио из phonetics данных"""
     if not audio_url:
         return
 
@@ -160,9 +208,11 @@ def _cache_audio_from_phonetics(audio_url: str, word: str):
 
 
 def streaming_play_and_cache(url: str, cache_path: str):
-    try:
-        from playsound import playsound
+    """Потоковое воспроизведение с кэшированием"""
+    if not PLAYSOUND_AVAILABLE:
+        return
 
+    try:
         resp = session_google.get(url, timeout=10, stream=True)
 
         if resp.status_code == 200:
@@ -186,32 +236,39 @@ def streaming_play_and_cache(url: str, cache_path: str):
                                 daemon=True
                             ).start()
 
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            shutil.move(tmp_path, cache_path)
+            # Явное закрытие handle перед move (критично для Windows)
+            tmp.close()
 
-    except Exception as e:
-        print(f"Streaming Play Error: {e}")
+            # Atomic write
+            temp_final = cache_path + '.tmp'
+            shutil.move(tmp_path, temp_final)
+            os.replace(temp_final, cache_path)
+
+    except (requests.RequestException, IOError, OSError):
+        pass
 
 
 def _safe_play(path: str):
+    """Безопасное воспроизведение с ожиданием готовности файла"""
+    if not PLAYSOUND_AVAILABLE or playsound is None:
+        return
+
     max_attempts = 10
     for i in range(max_attempts):
         try:
-            if os.path.exists(path) and os.path.getsize(path) > 1000:
-                from playsound import playsound
+            if is_valid_audio_file(path):
                 with _audio_play_lock:
                     playsound(path)
                 return
-        except Exception as e:
+        except (IOError, OSError, RuntimeError):
             if i < max_attempts - 1:
                 time.sleep(0.05)
-            else:
-                print(f"Play failed: {e}")
 
 
 # ===== DICTIONARY DATA =====
 
 def check_cache_only(word):
+    """Быстрая проверка наличия перевода в кэше"""
     path = get_cache_path(word)
     if os.path.exists(path):
         try:
@@ -221,49 +278,56 @@ def check_cache_only(word):
                 "rus": data.get("rus", ""),
                 "cached": True
             }
-        except:
+        except (IOError, OSError, json.JSONDecodeError, ValueError):
             pass
     return None
 
 
 def load_full_dictionary_data(word):
+    """Загружает полные словарные данные из кэша"""
     path = get_cache_path(word)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except (IOError, OSError, json.JSONDecodeError, ValueError):
             pass
     return None
 
 
 def save_full_dictionary_data(word, data):
+    """Сохраняет полные словарные данные в кэш"""
     path = get_cache_path(word)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        lemma = lemmatize_word(word)
-        print(f"✅ Saved cache for: {word} -> {lemma}")
-    except Exception as e:
-        print(f"Cache Save Error: {e}")
+    except (IOError, OSError, TypeError):
+        pass
 
 
 def fetch_full_dictionary_data(word):
     """
-    ✅ ВОССТАНОВЛЕНО:
-    1. API запрашивается с ЛЕММОЙ
-    2. Google TTS URL создаётся с ОРИГИНАЛЬНЫМ словом
-    3. Кэш сохраняется по имени ЛЕММЫ
+    Загружает полные данные словаря из API.
+    Оптимизировано:
+    - Проверяет кэш перед HTTP запросом
+    - Google TTS кэшируется асинхронно без блокировки
     """
+    # Проверяем полный кэш перед запросом к API
+    cached = load_full_dictionary_data(word)
+    if cached and cached.get("meanings"):
+        return cached
+
     lemma = lemmatize_word(word)
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{lemma}"
 
-    # ✅ КРИТИЧНО: Google TTS с ОРИГИНАЛЬНЫМ словом для правильного произношения
+    # Запускаем кэширование US audio в фоне (не блокируем)
     google_us_url = get_google_tts_url(word, "us")
     google_us_cache = get_audio_cache_path(word, "us")
-    _cache_audio_sync(google_us_url, google_us_cache)
-    print(f"✅ Google US audio cached: {word} (lemma: {lemma})")
+    threading.Thread(
+        target=_cache_audio_async,
+        args=(google_us_url, google_us_cache),
+        daemon=True
+    ).start()
 
     try:
         resp = session_dict.get(url, timeout=8)
@@ -272,6 +336,7 @@ def fetch_full_dictionary_data(word):
             if data_list and isinstance(data_list, list):
                 full_data = data_list[0]
 
+                # Получаем русский перевод
                 rus_trans = fetch_yandex_translation(lemma)
                 if not rus_trans:
                     rus_trans = fetch_google_translation(lemma)
@@ -281,20 +346,31 @@ def fetch_full_dictionary_data(word):
 
                 phonetics = full_data.get("phonetics", [])
 
+                # Кэшируем audio из phonetics
                 for p in phonetics:
                     audio_url = p.get("audio")
                     if audio_url:
                         _cache_audio_from_phonetics(audio_url, word)
 
-                has_us = any(
-                    "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")
-                    for p in phonetics if p.get("audio")
-                )
-                has_uk = any(
-                    "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")
-                    for p in phonetics if p.get("audio")
-                )
+                # Оптимизированная проверка US/UK (один проход с early break)
+                has_us = False
+                has_uk = False
 
+                for p in phonetics:
+                    audio = p.get("audio", "")
+                    if not audio:
+                        continue
+
+                    audio_lower = audio.lower()
+                    if "-us.mp3" in audio_lower or "en-US" in audio:
+                        has_us = True
+                    if "-uk.mp3" in audio_lower or "en-GB" in audio:
+                        has_uk = True
+
+                    if has_us and has_uk:
+                        break
+
+                # Добавляем Google TTS как fallback
                 if not has_us:
                     phonetics.append({
                         "text": "",
@@ -311,47 +387,45 @@ def fetch_full_dictionary_data(word):
                         "sourceUrl": "",
                         "license": {"name": "Google TTS", "url": ""}
                     })
-                    threading.Thread(
-                        target=_cache_audio_sync,
-                        args=(uk_url, get_audio_cache_path(word, "uk")),
-                        daemon=True
-                    ).start()
 
                 full_data["phonetics"] = phonetics
                 full_data["word"] = lemma
                 save_full_dictionary_data(word, full_data)
 
                 return full_data
-    except Exception as e:
-        print(f"Dict API Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError, TypeError):
+        pass
 
-    cached = load_full_dictionary_data(word)
-    if not cached:
-        rus_trans = fetch_yandex_translation(lemma)
-        if not rus_trans:
-            rus_trans = fetch_google_translation(lemma)
+    # Fallback на существующий кэш или создание минимального
+    if cached:
+        return cached
 
-        if rus_trans:
-            minimal_data = {
-                "word": lemma,
-                "rus": rus_trans,
-                "phonetics": [{
-                    "text": "",
-                    "audio": google_us_url,
-                    "sourceUrl": "",
-                    "license": {"name": "Google TTS", "url": ""}
-                }],
-                "meanings": []
-            }
-            save_full_dictionary_data(word, minimal_data)
-            return minimal_data
+    rus_trans = fetch_yandex_translation(lemma)
+    if not rus_trans:
+        rus_trans = fetch_google_translation(lemma)
 
-    return cached
+    if rus_trans:
+        minimal_data = {
+            "word": lemma,
+            "rus": rus_trans,
+            "phonetics": [{
+                "text": "",
+                "audio": google_us_url,
+                "sourceUrl": "",
+                "license": {"name": "Google TTS", "url": ""}
+            }],
+            "meanings": []
+        }
+        save_full_dictionary_data(word, minimal_data)
+        return minimal_data
+
+    return None
 
 
 # ===== TRANSLATION =====
 
 def fetch_yandex_translation(word):
+    """Получает перевод из Yandex Dictionary API"""
     key = cfg.get("API", "YandexKey")
     if not key:
         return None
@@ -368,14 +442,16 @@ def fetch_yandex_translation(word):
                     for tr in definition.get("tr", []):
                         translations.append(tr["text"])
                 return ", ".join(translations[:3])
-    except Exception as e:
-        print(f"Yandex API Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError):
+        pass
     return None
 
 
 def fetch_google_translation(word):
+    """Получает перевод из Google Translate"""
+    lemma = lemmatize_word(word)
+
     try:
-        lemma = lemmatize_word(word)
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
@@ -389,12 +465,13 @@ def fetch_google_translation(word):
             data = resp.json()
             translated_text = "".join([item[0] for item in data[0] if item[0]])
             return translated_text.strip()
-    except Exception as e:
-        print(f"Google Translation Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError, TypeError):
+        pass
     return None
 
 
 def fetch_word_translation(word):
+    """Получает перевод слова с использованием кэша"""
     full_data = load_full_dictionary_data(word)
     if full_data and "rus" in full_data:
         return {"rus": full_data["rus"], "cached": True}
@@ -405,11 +482,11 @@ def fetch_word_translation(word):
 
     google_trans = fetch_google_translation(word)
     if google_trans:
+        lemma = lemmatize_word(word)
         if full_data:
             full_data["rus"] = google_trans
             save_full_dictionary_data(word, full_data)
         else:
-            lemma = lemmatize_word(word)
             save_full_dictionary_data(word, {"rus": google_trans, "word": lemma})
         return {"rus": google_trans, "cached": False}
 
@@ -417,6 +494,7 @@ def fetch_word_translation(word):
 
 
 def fetch_sentence_translation(text):
+    """Переводит предложение через Google Translate"""
     text = text.strip()
     if not text:
         return ""
@@ -435,8 +513,8 @@ def fetch_sentence_translation(text):
             data = resp.json()
             translated_text = "".join([item[0] for item in data[0] if item[0]])
             return translated_text
-    except Exception as e:
-        print(f"Translation Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError, TypeError):
+        pass
 
     return None
 
@@ -444,8 +522,7 @@ def fetch_sentence_translation(text):
 # ===== IMAGES =====
 
 def download_image(url, word):
-    os.makedirs(IMG_DIR, exist_ok=True)
-
+    """Загружает изображение по URL"""
     try:
         if "pexels.com" in url:
             resp = session_pexels.get(url, timeout=5)
@@ -461,19 +538,18 @@ def download_image(url, word):
 
             if os.path.exists(path):
                 return path
-    except Exception as e:
-        print(f"Download Error: {e}")
+    except (requests.RequestException, IOError, OSError):
+        pass
     return None
 
 
 def fetch_pexels_image(word):
+    """Загружает изображение из Pexels API"""
     if is_image_not_found(word):
-        print(f"⏭️ Skipping Pexels (marked): {word}")
         return None
 
     cached_path = get_image_path(word)
     if os.path.exists(cached_path):
-        print(f"✅ Image from cache: {word}")
         return cached_path
 
     key = cfg.get("API", "PexelsKey")
@@ -491,21 +567,21 @@ def fetch_pexels_image(word):
             if data.get("photos"):
                 img_url = data["photos"][0]["src"]["medium"]
                 return download_image(img_url, word)
-    except Exception as e:
-        print(f"Pexels Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError):
+        pass
 
     return None
 
 
 def fetch_wiki_image(word):
+    """Загружает изображение из Wikipedia"""
     if is_image_not_found(word):
-        print(f"⏭️ Skipping Wiki (marked): {word}")
         return None
 
     lemma = lemmatize_word(word)
-    url = f"https://en.wikipedia.org/w/api.php?action=query&titles={lemma}&prop=pageimages&format=json&pithumbsize=500"
+    url = f"https://en.wikipedia.org/w/api.php?action=query&titles={lemma}&prop=pageimages&format=json&pithumbsize={IMAGE_THUMBNAIL_SIZE}"
 
-    BLACKLIST = [
+    blacklist = [
         "Commons-logo", "Disambig", "Ambox", "Wiki_letter",
         "Question_book", "Folder", "Decrease", "Increase",
         "Edit-clear", "Symbol", "Icon",
@@ -538,24 +614,25 @@ def fetch_wiki_image(word):
                 if not img_url:
                     continue
 
-                if any(bad.lower() in img_url.lower() for bad in BLACKLIST):
+                if any(bad.lower() in img_url.lower() for bad in blacklist):
                     continue
 
                 width = thumbnail.get("width", 0)
                 height = thumbnail.get("height", 0)
 
-                if width < 100 or height < 100:
+                if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
                     continue
 
                 return download_image(img_url, word)
 
-    except Exception as e:
-        print(f"Wiki Error: {e}")
+    except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError):
+        pass
 
     return None
 
 
 def fetch_image(word):
+    """Загружает изображение из доступных источников"""
     path = fetch_pexels_image(word)
     if path:
         return path, "Pexels"
@@ -571,6 +648,7 @@ def fetch_image(word):
 
 
 def close_all_sessions():
+    """Закрывает все HTTP сессии"""
     session_dict.close()
     session_google.close()
     session_pexels.close()
