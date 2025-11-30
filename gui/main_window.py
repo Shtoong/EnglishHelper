@@ -5,6 +5,7 @@ import sys
 import os
 import threading
 import requests
+import time
 from typing import Dict, List, Optional, Tuple, Callable
 
 from playsound import playsound
@@ -13,7 +14,7 @@ from config import cfg, AUDIO_DIR
 from gui.styles import COLORS, FONTS
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
-from network import fetch_sentence_translation
+from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
 
 
 class ResizeGrip(tk.Label):
@@ -585,8 +586,8 @@ class MainWindow(tk.Tk):
     def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
         """Извлекает US и UK аудио URL с приоритетом"""
         # Ищем специфичные варианты
-        us = next((p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "")), None)
-        uk = next((p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "")), None)
+        us = next((p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")), None)
+        uk = next((p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")), None)
 
         # Fallback: берем первые доступные
         if not us or not uk:
@@ -711,24 +712,52 @@ class MainWindow(tk.Tk):
             ).start()
 
     def _play_audio_worker(self, url: str):
-        """Worker для загрузки и воспроизведения аудио"""
+        """Worker для загрузки и воспроизведения аудио (для кнопок US/UK)"""
         try:
-            filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
-            if not filename.endswith(".mp3"):
-                filename += ".mp3"
-
-            file_path = os.path.join(AUDIO_DIR, filename)
+            # Определяем путь кэша
+            if "translate.google.com" in url:
+                # Google TTS - извлекаем слово и акцент
+                from urllib.parse import parse_qs, urlparse
+                parsed = urlparse(url)
+                params = parse_qs(parsed.query)
+                word = params.get('q', [''])[0]
+                accent = "us" if "en-US" in url else "uk"
+                cache_path = get_audio_cache_path(word, accent)
+            else:
+                # dictionaryapi.dev - используем имя файла
+                filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
+                if not filename.endswith(".mp3"):
+                    filename += ".mp3"
+                cache_path = os.path.join(AUDIO_DIR, filename)
 
             # Скачиваем если нет
-            if not os.path.exists(file_path):
-                resp = requests.get(url, timeout=10)
-                if resp.status_code == 200:
-                    with open(file_path, "wb") as f:
-                        f.write(resp.content)
-                else:
-                    return
+            if not os.path.exists(cache_path):
+                download_and_cache_audio(url, cache_path)
 
-            playsound(file_path)
+            if os.path.exists(cache_path):
+                playsound(cache_path)
+        except Exception as e:
+            print(f"Audio Play Error: {e}")
+
+    def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
+        """
+        Воспроизводит аудио из кэша для автопроизношения.
+        Если файла нет - ждет появления (параллельная загрузка) или скачивает.
+        """
+        try:
+            # Ждем появления файла максимум 3 секунды
+            max_wait = 3.0
+            waited = 0.0
+            while not os.path.exists(cache_path) and waited < max_wait:
+                time.sleep(0.1)
+                waited += 0.1
+
+            if os.path.exists(cache_path):
+                playsound(cache_path)
+            else:
+                # Fallback: скачиваем синхронно
+                if download_and_cache_audio(fallback_url, cache_path):
+                    playsound(cache_path)
         except Exception as e:
             print(f"Audio Play Error: {e}")
 

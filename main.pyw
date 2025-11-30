@@ -5,6 +5,7 @@ import ctypes
 import tkinter as tk
 import time
 import pyperclip
+import os
 
 from config import cfg
 from vocab import init_vocab, is_word_too_simple
@@ -14,7 +15,10 @@ from network import (
     fetch_sentence_translation,
     fetch_full_dictionary_data,
     load_full_dictionary_data,
-    check_cache_only
+    check_cache_only,
+    get_google_tts_url,
+    get_audio_cache_path,
+    download_and_cache_audio
 )
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
@@ -70,31 +74,24 @@ def worker_full_data_display(tgt, app):
     if full_data:
         try:
             if cfg.get_bool("USER", "AutoPronounce"):
-                phonetics = full_data.get("phonetics", [])
-                audio_url = None
+                # НОВАЯ СТРАТЕГИЯ: всегда берем Google US
+                google_us_url = get_google_tts_url(tgt, "us")
+                cache_path = get_audio_cache_path(tgt, "us")
 
-                # СТРАТЕГИЯ: US > Non-UK > Any
-                for p in phonetics:
-                    url = p.get("audio", "")
-                    if url and "-us.mp3" in url.lower():
-                        audio_url = url
-                        break
-                if not audio_url:
-                    for p in phonetics:
-                        url = p.get("audio", "")
-                        if url and "-uk.mp3" not in url.lower() and "-au.mp3" not in url.lower():
-                            audio_url = url
-                            break
-                if not audio_url:
-                    for p in phonetics:
-                        if p.get("audio"):
-                            audio_url = p["audio"]
-                            break
-
-                if audio_url:
+                # Если файла нет в кэше - скачиваем параллельно
+                if not os.path.exists(cache_path):
                     threading.Thread(
-                        target=app._play_audio_worker, args=(audio_url,), daemon=True
+                        target=download_and_cache_audio,
+                        args=(google_us_url, cache_path),
+                        daemon=True
                     ).start()
+
+                # Воспроизводим (параллельно с возможной загрузкой)
+                threading.Thread(
+                    target=app._play_audio_worker_from_path,
+                    args=(cache_path, google_us_url),
+                    daemon=True
+                ).start()
         except Exception as e:
             print(f"Auto-play error: {e}")
 

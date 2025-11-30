@@ -1,6 +1,7 @@
 import requests
 import os
 import json
+from urllib.parse import quote
 from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
 
@@ -8,6 +9,42 @@ def get_cache_path(word):
     """Возвращает путь к кэшированному файлу данных слова"""
     safe_word = "".join(c for c in word if c.isalnum()).lower()
     return os.path.join(DICT_DIR, f"{safe_word}-full.json")
+
+
+def get_google_tts_url(word: str, accent: str = "us") -> str:
+    """
+    Генерирует URL для Google TTS API
+    accent: 'us' или 'uk'
+    """
+    lang_code = "en-US" if accent == "us" else "en-GB"
+    encoded_word = quote(word)
+    return f"https://translate.google.com/translate_tts?ie=UTF-8&tl={lang_code}&client=tw-ob&q={encoded_word}"
+
+
+def get_audio_cache_path(word: str, accent: str = "us") -> str:
+    """
+    Возвращает путь для кэширования аудио
+    Формат: {word}-{accent}.mp3
+    """
+    safe_word = "".join(c for c in word if c.isalnum()).lower()
+    return os.path.join(AUDIO_DIR, f"{safe_word}-{accent}.mp3")
+
+
+def download_and_cache_audio(url: str, cache_path: str):
+    """
+    Скачивает аудио и сохраняет по указанному пути
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "wb") as f:
+                f.write(resp.content)
+            return True
+    except Exception as e:
+        print(f"Audio download error: {e}")
+    return False
 
 
 def check_cache_only(word):
@@ -52,7 +89,7 @@ def save_full_dictionary_data(word, data):
 def fetch_full_dictionary_data(word):
     """
     Получает полные данные о слове (определения, фонетика)
-    из Free Dictionary API.
+    из Free Dictionary API + добавляет Google TTS fallback.
     """
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
     try:
@@ -63,10 +100,36 @@ def fetch_full_dictionary_data(word):
                 # Берем первый результат
                 full_data = data_list[0]
 
-                # Пытаемся найти русский перевод через Yandex, чтобы дополнить данные
+                # Пытаемся найти русский перевод через Yandex
                 rus_trans = fetch_yandex_translation(word)
                 if rus_trans:
                     full_data["rus"] = rus_trans
+
+                # Обогащаем phonetics Google TTS
+                phonetics = full_data.get("phonetics", [])
+
+                # Проверяем наличие US и UK аудио от dictionaryapi.dev
+                has_us = any("-us.mp3" in p.get("audio", "").lower() for p in phonetics if p.get("audio"))
+                has_uk = any("-uk.mp3" in p.get("audio", "").lower() for p in phonetics if p.get("audio"))
+
+                # Добавляем Google TTS как fallback
+                if not has_us:
+                    phonetics.append({
+                        "text": "",
+                        "audio": get_google_tts_url(word, "us"),
+                        "sourceUrl": "",
+                        "license": {"name": "Google TTS", "url": ""}
+                    })
+
+                if not has_uk:
+                    phonetics.append({
+                        "text": "",
+                        "audio": get_google_tts_url(word, "uk"),
+                        "sourceUrl": "",
+                        "license": {"name": "Google TTS", "url": ""}
+                    })
+
+                full_data["phonetics"] = phonetics
 
                 save_full_dictionary_data(word, full_data)
                 return full_data
