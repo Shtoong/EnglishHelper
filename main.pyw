@@ -37,8 +37,14 @@ BUFFER = ""
 SENTENCE_FINISHED = False
 EDITOR = TextEditorSimulator()
 
-# ===== RUSSIAN TO ENGLISH KEYBOARD LAYOUT MAPPING =====
-RU_TO_EN = {
+# ===== KEYBOARD LIBRARY BUG FIX =====
+# КРИТИЧНО: НЕ УДАЛЯТЬ!
+# Библиотека keyboard на Windows имеет баг: при английской раскладке
+# e.name может возвращать РУССКИЕ символы (по физической позиции клавиши).
+# Например: нажатие "h" → e.name = "р" (русская буква на той же клавише).
+# Этот словарь преобразует русские символы обратно в английские.
+# Без него во втором окне будет печататься кириллица вместо латиницы!
+KEYBOARD_BUG_FIX = {
     ru: en
     for ru, en in zip(
         "йцукенгшщзхъфывапролджэячсмитьбю",
@@ -177,7 +183,7 @@ def process_word_parallel(w, app):
     # Быстрая проверка кэша
     cached_res = check_cache_only(tgt)
     if cached_res:
-        # КРИТИЧНО: Используем app.after() для thread safety
+        # Thread-safe: используем app.after() для UI обновлений
         app.after(0, lambda: app.update_trans_ui(cached_res, "Cache"))
     else:
         threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
@@ -259,7 +265,7 @@ def trigger_sentence_update(app, need_translate=False):
 def on_key_event(e):
     """
     Глобальный обработчик клавиатурных событий.
-    Оптимизировано: кэшированная проверка раскладки + преобразование RU→EN.
+    Оптимизировано: кэшированная проверка раскладки + фикс бага keyboard.
     """
     global BUFFER, SENTENCE_FINISHED
 
@@ -277,9 +283,12 @@ def on_key_event(e):
     key = e.name
     key_lower = key.lower()
 
-    # КРИТИЧНО: Преобразование русских символов в английские
-    if key_lower in RU_TO_EN:
-        key = RU_TO_EN[key_lower]
+    # КРИТИЧНО: НЕ УДАЛЯТЬ!
+    # Исправляем баг библиотеки keyboard: она возвращает русские символы
+    # даже при английской раскладке (по физической позиции клавиши).
+    # Без этого фикса во втором окне будет кириллица вместо латиницы.
+    if key_lower in KEYBOARD_BUG_FIX:
+        key = KEYBOARD_BUG_FIX[key_lower]
 
     update_needed = False
     need_translate = False
