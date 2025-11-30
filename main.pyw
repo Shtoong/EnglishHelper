@@ -106,7 +106,7 @@ def worker_img(tgt, app):
     app.after(0, lambda: app.update_img_ui(path, src))
 
 
-def _instant_auto_pronounce(word, app):
+def _instant_auto_pronounce(word):
     """
     Автоматическое произношение слова (только Google TTS US).
     Оптимизировано: активное ожидание файла до 2 секунд.
@@ -155,7 +155,7 @@ def worker_full_data_display(tgt, app):
     if cfg.get_bool("USER", "AutoPronounce"):
         threading.Thread(
             target=_instant_auto_pronounce,
-            args=(tgt, app),
+            args=(tgt,),
             daemon=True
         ).start()
 
@@ -174,7 +174,7 @@ def process_word_async(word, app):
 
 def process_word_parallel(w, app):
     """Параллельная обработка слова (перевод + изображение + словарь)"""
-    too_simple, tgt = is_word_too_simple(w, int(app.vocab_var.get()))  # ← ИСПРАВЛЕНО
+    too_simple, tgt = is_word_too_simple(w, int(app.vocab_var.get()))
     if too_simple:
         return
 
