@@ -163,6 +163,7 @@ class MainWindow(tk.Tk):
         self.trans_cache = {}
         self.hover_timer = None
         self.search_callback = None
+        self._cache_update_scheduled = False
 
         # Создание виджетов
         self.sent_window = SentenceWindow(self)
@@ -170,7 +171,8 @@ class MainWindow(tk.Tk):
 
         self._init_ui()
         self._bind_events()
-        self._sync_initial_state()  # НОВОЕ: синхронизация состояния при запуске
+        self._sync_initial_state()
+        self.update_cache_button()  # НОВОЕ: первоначальный расчет размера кэша
 
     @property
     def content_width(self) -> int:
@@ -411,10 +413,20 @@ class MainWindow(tk.Tk):
             self.toggle_auto_pronounce,
             "AutoPronounce"
         )
-        self.btn_toggle_pronounce.pack(side="left", padx=(0, 10))
+        self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-    def _create_toggle_button(self, parent, text: str, command: Callable, config_key: str) -> tk.Label:
-        """Создает кнопку-переключатель с hover эффектом"""
+        # НОВАЯ КНОПКА: Очистка кэша
+        self.btn_cache = self._create_toggle_button(
+            status_bar,
+            "Cache --",
+            self.clear_cache,
+            None  # Не привязана к config
+        )
+        self.btn_cache.pack(side="left", padx=(0, 10))
+
+    def _create_toggle_button(self, parent, text: str, command: Callable,
+                              config_key: Optional[str]) -> tk.Label:
+        """ОБНОВЛЕНО: Создает кнопку-переключатель с hover эффектом"""
         btn = tk.Label(
             parent,
             text=text,
@@ -433,13 +445,19 @@ class MainWindow(tk.Tk):
             btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
         def on_leave(e):
-            self._update_toggle_button_style(btn, config_key)
+            if config_key:  # НОВОЕ: проверка наличия config_key
+                self._update_toggle_button_style(btn, config_key)
+            else:
+                btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
 
         # Установить начальный стиль
-        self._update_toggle_button_style(btn, config_key)
+        if config_key:  # НОВОЕ: проверка наличия config_key
+            self._update_toggle_button_style(btn, config_key)
+        else:
+            btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
         return btn
 
@@ -464,12 +482,61 @@ class MainWindow(tk.Tk):
         self.scale.bind("<ButtonRelease-1>", self.hide_popup_and_save)
 
     def _sync_initial_state(self):
-        """НОВОЕ: Синхронизация UI с настройками при запуске"""
+        """Синхронизация UI с настройками при запуске"""
         # Окно предложений - явная синхронизация состояния
         if cfg.get_bool("USER", "ShowSentenceWindow", True):
             self.sent_window.deiconify()
         else:
             self.sent_window.withdraw()
+
+    # ===== CACHE MANAGEMENT =====
+
+    def update_cache_button(self):
+        """НОВОЕ: Запускает параллельный подсчет размера кэша"""
+        if self._cache_update_scheduled:
+            return
+        self._cache_update_scheduled = True
+        threading.Thread(
+            target=self._worker_update_cache_size,
+            daemon=True
+        ).start()
+
+    def _worker_update_cache_size(self):
+        """НОВОЕ: Worker для подсчета размера кэша"""
+        from config import get_cache_size_mb
+        size_mb = get_cache_size_mb()
+
+        # Адаптивное форматирование
+        if size_mb >= 1000:
+            text = f"Cache {size_mb / 1024:.1f}G"
+        else:
+            text = f"Cache {size_mb:.1f}M"
+
+        self.after(0, lambda: self.btn_cache.config(text=text))
+        self._cache_update_scheduled = False
+
+    def clear_cache(self, event=None):
+        """НОВОЕ: Очищает кэш и обновляет кнопку"""
+        # Визуальный feedback
+        self.btn_cache.config(text="Clearing...")
+
+        threading.Thread(
+            target=self._worker_clear_cache,
+            daemon=True
+        ).start()
+
+    def _worker_clear_cache(self):
+        """НОВОЕ: Worker для удаления файлов кэша"""
+        from config import clear_cache
+        deleted_count = clear_cache()
+
+        # Показываем результат на 1 секунду
+        self.after(0, lambda: self.btn_cache.config(text=f"Cleared ({deleted_count})"))
+        time.sleep(1)
+
+        # Обновляем размер после очистки
+        self.after(0, lambda: self.update_cache_button())
+        print(f"Cache cleared: {deleted_count} files deleted")
 
     # ===== SCROLLBAR LOGIC =====
 
@@ -836,7 +903,7 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """Сброс UI для нового слова"""
+        """ОБНОВЛЕНО: Сброс UI для нового слова + обновление кэша"""
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
         self.lbl_rus.config(text="Loading...")
@@ -848,6 +915,9 @@ class MainWindow(tk.Tk):
 
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
+
+        # НОВОЕ: Обновляем размер кэша после каждого слова
+        self.update_cache_button()
 
     # ===== WINDOW CONTROLS =====
 
@@ -890,7 +960,7 @@ class MainWindow(tk.Tk):
         self._update_toggle_button_style(button, config_key)
 
     def toggle_sentence_window(self, event=None):
-        """ОБНОВЛЕНО: Переключение окна предложений с явной синхронизацией"""
+        """Переключение окна предложений с явной синхронизацией"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
         cfg.set("USER", "ShowSentenceWindow", new_state)

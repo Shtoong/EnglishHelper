@@ -76,4 +76,41 @@ class ConfigManager:
         self.config.set(section, key, str(value))
         self._save()
 
+
+def get_cache_size_mb() -> float:
+    """Возвращает размер папки Data в мегабайтах"""
+    if not os.path.exists(DATA_DIR):
+        return 0.0
+
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(DATA_DIR):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if os.path.exists(filepath):
+                try:
+                    total_size += os.path.getsize(filepath)
+                except Exception:
+                    pass  # Игнорируем файлы, к которым нет доступа
+
+    return round(total_size / (1024 * 1024), 1)  # MB с точностью до 0.1
+
+
+def clear_cache() -> int:
+    """Удаляет все файлы из кэша, сохраняя структуру папок"""
+    deleted_count = 0
+
+    for subdir in [IMG_DIR, DICT_DIR, AUDIO_DIR]:
+        if os.path.exists(subdir):
+            for filename in os.listdir(subdir):
+                filepath = os.path.join(subdir, filename)
+                try:
+                    if os.path.isfile(filepath):
+                        os.unlink(filepath)
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting {filepath}: {e}")
+
+    return deleted_count
+
+
 cfg = ConfigManager()
