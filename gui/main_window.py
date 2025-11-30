@@ -826,19 +826,22 @@ class MainWindow(tk.Tk):
             print(f"Audio Play Error: {e}")
 
     def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
-        """Воспроизводит аудио из кэша для автопроизношения"""
+        """
+        ИСПРАВЛЕНО: Воспроизведение без блокирующего ожидания.
+        Используется для автопроизношения.
+        """
         try:
-            max_wait = 3.0
-            waited = 0.0
-            while not os.path.exists(cache_path) and waited < max_wait:
-                time.sleep(0.1)
-                waited += 0.1
+            from playsound import playsound
+            from network import streaming_play_and_cache
 
+            # ✅ Если файл есть - играем мгновенно
             if os.path.exists(cache_path):
                 playsound(cache_path)
-            else:
-                if download_and_cache_audio(fallback_url, cache_path):
-                    playsound(cache_path)
+                return
+
+            # ✅ Иначе - streaming + кэширование
+            streaming_play_and_cache(fallback_url, cache_path)
+
         except Exception as e:
             print(f"Audio Play Error: {e}")
 

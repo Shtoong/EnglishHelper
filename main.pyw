@@ -18,12 +18,13 @@ from network import (
     check_cache_only,
     get_google_tts_url,
     get_audio_cache_path,
-    download_and_cache_audio
+    download_and_cache_audio,
+    streaming_play_and_cache,
+    close_all_sessions
 )
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
 
-# Глобальное состояние
 BUFFER = ""
 SENTENCE_FINISHED = False
 EDITOR = TextEditorSimulator()
@@ -50,6 +51,8 @@ def is_english_layout():
         return True
 
 
+# ===== WORKERS =====
+
 def worker_trans(tgt, app):
     res = fetch_word_translation(tgt)
     app.after(
@@ -66,42 +69,54 @@ def worker_img(tgt, app):
     app.after(0, lambda: app.update_img_ui(path, src))
 
 
+def _instant_auto_pronounce(word, app):
+    """
+    ✅ ИСПРАВЛЕНО: ТОЛЬКО Google TTS US с активным ожиданием
+    """
+    try:
+        from playsound import playsound
+
+        # ✅ ТОЛЬКО US от Google (гарантированно кэшируется)
+        cache_path = get_audio_cache_path(word, "us")
+
+        # Ждём до 2 секунд готовности файла
+        max_wait = 20  # 20 * 0.1s = 2 секунды
+        for attempt in range(max_wait):
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
+                try:
+                    playsound(cache_path)
+                    print(f"✅ Auto-played US: {word}")
+                    return
+                except Exception as e:
+                    print(f"Play error: {e}")
+                    break
+            time.sleep(0.1)
+
+        # Если файл так и не появился - streaming fallback
+        url = get_google_tts_url(word, "us")
+        streaming_play_and_cache(url, cache_path)
+
+    except Exception as e:
+        print(f"Auto-pronounce error: {e}")
+
+
 def worker_full_data_display(tgt, app):
     """
-    ИСПРАВЛЕНО: Загрузка данных словаря + автопроизношение + обновление UI
+    ✅ ИСПРАВЛЕНО: Автопроизношение работает даже без определений
     """
-    # 1. Загружаем данные словаря (если есть)
+    # 1. Проверяем кэш
     full_data = load_full_dictionary_data(tgt)
-    if full_data is None:
-        fetch_full_dictionary_data(tgt)
-        full_data = load_full_dictionary_data(tgt)
 
-    # 2. КРИТИЧНО: Обновляем UI данными словаря (даже если None)
+    # 2. Если нет в кэше - загружаем СИНХРОННО (внутри кэшируется Google TTS US)
+    if not full_data:
+        full_data = fetch_full_dictionary_data(tgt)
+
+    # 3. Обновляем UI
     app.after(0, lambda: app.update_full_data_ui(full_data))
 
-    # 3. Автопроизношение ВСЕГДА (независимо от наличия данных)
-    try:
-        if cfg.get_bool("USER", "AutoPronounce"):
-            # Используем Google TTS US для любого слова
-            google_us_url = get_google_tts_url(tgt, "us")
-            cache_path = get_audio_cache_path(tgt, "us")
-
-            # Если файла нет в кэше - скачиваем параллельно
-            if not os.path.exists(cache_path):
-                threading.Thread(
-                    target=download_and_cache_audio,
-                    args=(google_us_url, cache_path),
-                    daemon=True
-                ).start()
-
-            # Воспроизводим (параллельно с возможной загрузкой)
-            threading.Thread(
-                target=app._play_audio_worker_from_path,
-                args=(cache_path, google_us_url),
-                daemon=True
-            ).start()
-    except Exception as e:
-        print(f"Auto-play error: {e}")
+    # 4. ✅ КРИТИЧНО: Автопроизношение ВСЕГДА (файл УЖЕ готов)
+    if cfg.get_bool("USER", "AutoPronounce"):
+        _instant_auto_pronounce(tgt, app)
 
 
 def process_word_parallel(w, app):
@@ -129,14 +144,18 @@ def handle_clipboard_word(app):
     except Exception:
         return
 
-    if not text: return
+    if not text:
+        return
     text = text.strip()
 
-    if not (0 < len(text) <= 50): return
-    if not re.match(r"^[a-zA-Z\-']+$", text): return
+    if not (0 < len(text) <= 50):
+        return
+    if not re.match(r"^[a-zA-Z\-']+$", text):
+        return
 
     lowered = text.lower()
-    if lowered == CLIPBOARD_LAST_WORD: return
+    if lowered == CLIPBOARD_LAST_WORD:
+        return
 
     CLIPBOARD_LAST_WORD = lowered
     threading.Thread(
@@ -145,21 +164,14 @@ def handle_clipboard_word(app):
 
 
 def trigger_sentence_update(app, need_translate=False):
-    """
-    Обновляет текст в окне.
-    API дергается ТОЛЬКО если need_translate=True (конец слова/предложения).
-    """
     global TRANSLATION_TIMER
 
-    # 1. Визуальное обновление английского текста - всегда и мгновенно
     eng_display = EDITOR.get_text_with_cursor()
     app.after_idle(lambda: app.sent_window.lbl_eng.config(text=eng_display))
 
-    # 2. Сбрасываем предыдущий таймер (чтобы не переводить недописанное)
     if TRANSLATION_TIMER is not None:
         TRANSLATION_TIMER.cancel()
 
-    # 3. Если это разделитель - запускаем перевод
     if need_translate:
         def delayed_translation_task():
             clean_text = EDITOR.get_text().strip()
@@ -175,15 +187,16 @@ def trigger_sentence_update(app, need_translate=False):
                     lambda: app.sent_window.lbl_rus.config(text="..."),
                 )
 
-        # Минимальная задержка 0.1с (защита от слишком быстрого спама пробелами)
         TRANSLATION_TIMER = threading.Timer(0.1, delayed_translation_task)
         TRANSLATION_TIMER.start()
 
 
 def on_key_event(e):
     global BUFFER, SENTENCE_FINISHED
-    if e.event_type == "down": return
-    if not is_english_layout(): return
+    if e.event_type == "down":
+        return
+    if not is_english_layout():
+        return
 
     if keyboard.is_pressed('ctrl') or keyboard.is_pressed('alt'):
         return
@@ -247,7 +260,8 @@ def on_key_event(e):
     elif key_lower == "backspace":
         EDITOR.backspace()
         update_needed = True
-        if BUFFER: BUFFER = BUFFER[:-1]
+        if BUFFER:
+            BUFFER = BUFFER[:-1]
         SENTENCE_FINISHED = False
 
     elif key_lower == "delete":
@@ -271,15 +285,17 @@ if __name__ == "__main__":
     init_vocab()
     APP = MainWindow()
 
-    # --- СВЯЗЫВАЕМ КЛИК ПО СИНОНИМУ С ПОИСКОМ ---
     APP.search_callback = lambda w: threading.Thread(
         target=process_word_parallel, args=(w, APP), daemon=True
     ).start()
 
-    # --- СОХРАНЯЕМ CALLBACK ДЛЯ БУФЕРА ОБМЕНА ---
     APP.clipboard_callback = lambda: handle_clipboard_word(APP)
 
     APP.hook_func = on_key_event
     keyboard.hook(on_key_event)
     keyboard.add_hotkey("ctrl+c", APP.clipboard_callback)
-    APP.mainloop()
+
+    try:
+        APP.mainloop()
+    finally:
+        close_all_sessions()
