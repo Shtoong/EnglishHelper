@@ -87,7 +87,7 @@ class TranslationTooltip:
             justify='left',
             bg=COLORS["bg_secondary"],
             fg=COLORS["text_main"],
-            font=FONTS["tooltip"],  # FIXED: was ("Segoe UI", 10)
+            font=FONTS["tooltip"],
             wraplength=300,
             padx=8,
             pady=4
@@ -182,15 +182,29 @@ class MainWindow(tk.Tk):
         return self.winfo_width() - self.CONTENT_PADDING
 
     def _init_ui(self):
-        """Инициализация всех UI элементов"""
+        """
+        Инициализация всех UI элементов.
+
+        КРИТИЧНО: Порядок создания элементов важен для правильного layout:
+        1. Верхние элементы (top bar, header, translation, image, separator)
+        2. BOTTOM FRAME (слайдер + кнопки) - создаётся РАНЬШЕ scrollable content
+        3. Scrollable content - заполняет оставшееся пространство
+
+        Это предотвращает выталкивание bottom_frame за границы окна при показе картинки.
+        """
         self._create_top_bar()
         self._create_word_header()
         self._create_translation_display()
         self._create_image_container()
         self._create_separator()
-        self._create_scrollable_content()
+
+        # ИСПРАВЛЕНИЕ: Создаём bottom_frame ДО scrollable_content
+        # Это гарантирует что слайдер всегда остаётся внизу
         self._create_vocab_slider()
         self._create_status_bar()
+
+        # Scrollable content создаётся ПОСЛЕДНИМ и заполняет оставшееся место
+        self._create_scrollable_content()
 
     def _create_label(self, parent, text: str = "", font_key: str = "definition",
                       fg_key: str = "text_main", **kwargs) -> tk.Label:
@@ -215,7 +229,7 @@ class MainWindow(tk.Tk):
             fg_key="close_btn",
             cursor="hand2"
         )
-        btn_close.config(font=FONTS["close_btn"])  # FIXED: was ("Arial", 12)
+        btn_close.config(font=FONTS["close_btn"])
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
@@ -248,7 +262,7 @@ class MainWindow(tk.Tk):
         btn = tk.Label(
             parent,
             text=text,
-            font=FONTS["audio_btn"],  # FIXED: was ("Segoe UI", 9)
+            font=FONTS["audio_btn"],
             bg=COLORS["button_bg"],
             fg=COLORS["text_main"],
             cursor="hand2",
@@ -268,7 +282,7 @@ class MainWindow(tk.Tk):
             wraplength=self.DEFAULT_WRAPLENGTH,
             justify="center"
         )
-        self.lbl_rus.config(font=FONTS["translation"])  # FIXED: was ("Segoe UI", 33)
+        self.lbl_rus.config(font=FONTS["translation"])
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
 
     def _create_image_container(self):
@@ -289,7 +303,13 @@ class MainWindow(tk.Tk):
         ).pack(pady=5)
 
     def _create_scrollable_content(self):
-        """Прокручиваемая область с определениями"""
+        """
+        Прокручиваемая область с определениями.
+
+        КРИТИЧНО: Этот метод вызывается ПОСЛЕ _create_vocab_slider() и _create_status_bar(),
+        чтобы scrollable content занял только оставшееся пространство между верхними
+        элементами и нижним фреймом (который уже запакован с side="bottom").
+        """
         scroll_container = tk.Frame(self, bg=COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -314,7 +334,12 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
 
     def _create_vocab_slider(self):
-        """Слайдер уровня словаря"""
+        """
+        Слайдер уровня словаря.
+
+        КРИТИЧНО: Создаётся с side="bottom" ДО _create_scrollable_content(),
+        чтобы всегда оставаться внизу окна независимо от размера картинки.
+        """
         self.bottom_frame = tk.Frame(self, bg=COLORS["bg"])
         self.bottom_frame.pack(side="bottom", fill="x", padx=0, pady=0)
 
@@ -379,7 +404,11 @@ class MainWindow(tk.Tk):
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
     def _create_status_bar(self):
-        """Нижняя панель статуса с кнопками управления"""
+        """
+        Нижняя панель статуса с кнопками управления.
+
+        КРИТИЧНО: Создаётся внутри bottom_frame, который уже запакован с side="bottom".
+        """
         status_bar = tk.Frame(self.bottom_frame, bg=COLORS["bg"])
         status_bar.pack(side="bottom", fill="x", pady=2)
 
@@ -754,7 +783,7 @@ class MainWindow(tk.Tk):
         tk.Label(
             syn_frame,
             text="Syn:",
-            font=FONTS["synonym_label"],  # FIXED: was ("Segoe UI", 9, "bold")
+            font=FONTS["synonym_label"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
         ).pack(side="left", anchor="n")
@@ -763,7 +792,7 @@ class MainWindow(tk.Tk):
             tag = tk.Label(
                 syn_frame,
                 text=syn,
-                font=FONTS["synonym"],  # FIXED: was ("Segoe UI", 8) - это был баг! Должно быть 10
+                font=FONTS["synonym"],
                 bg=COLORS["bg_secondary"],
                 fg=COLORS["text_main"],
                 padx=6,
@@ -1010,9 +1039,15 @@ class MainWindow(tk.Tk):
         self.dragging_allowed = False
         if not self.popup:
             self.popup = VocabPopup(self)
-            x = self.winfo_x() + self.winfo_width() + 10
-            y = self.winfo_y()
-            self.popup.geometry(f"220x550+{x}+{y}")
+
+        # Позиционируем справа от главного окна
+        x = self.winfo_x() + self.winfo_width() + 10
+        y = self.winfo_y()
+
+        # Используем новый метод show() с параметрами
+        self.popup.show(x, y)
+
+        # Обновляем содержимое
         self.update_popup_content()
 
     def move_popup(self, event):
