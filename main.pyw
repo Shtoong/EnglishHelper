@@ -1,3 +1,21 @@
+"""
+Главный модуль приложения EnglishHelper.
+
+Функциональность:
+- Глобальные хуки клавиатуры для отслеживания печати
+- Обработка буфера обмена (Ctrl+C)
+- Параллельная загрузка данных (перевод + изображение + словарь)
+- Автоматическое произношение слов
+- Управление предложениями с отложенным переводом
+
+Оптимизации v2:
+- Sequence numbers для защиты от race conditions
+- Передача seq во все workers
+- Thread-safe управление последовательностью обновлений UI
+- Активное ожидание аудио файлов для автопроизношения
+- Кэширование проверки раскладки (500ms TTL)
+"""
+
 import threading
 import keyboard
 import re
@@ -88,28 +106,45 @@ def is_english_layout():
 
 # ===== WORKERS =====
 
-def worker_trans(tgt, app):
-    """Загружает перевод слова"""
+def worker_trans(tgt, app, seq):
+    """
+    Загружает перевод слова.
+
+    Args:
+        tgt: Целевое слово для перевода
+        app: Экземпляр MainWindow
+        seq: Sequence number для защиты от race conditions
+    """
     res = fetch_word_translation(tgt)
     app.after(
         0,
         lambda: app.update_trans_ui(
             res or {},
-            "API" if res and not res.get("cached") else "—"
+            "API" if res and not res.get("cached") else "—",
+            seq  # ← Передаём seq для валидации
         ),
     )
 
 
-def worker_img(tgt, app):
-    """Загружает изображение для слова"""
+def worker_img(tgt, app, seq):
+    """
+    Загружает изображение для слова.
+
+    Args:
+        tgt: Целевое слово для изображения
+        app: Экземпляр MainWindow
+        seq: Sequence number для защиты от race conditions
+    """
     path, src = fetch_image(tgt)
-    app.after(0, lambda: app.update_img_ui(path, src))
+    app.after(0, lambda: app.update_img_ui(path, src, seq))  # ← Передаём seq
 
 
 def _instant_auto_pronounce(word):
     """
     Автоматическое произношение слова (только Google TTS US).
+
     Оптимизировано: активное ожидание файла до 2 секунд.
+    Если файл не готов — fallback на streaming воспроизведение.
     """
     if not PLAYSOUND_AVAILABLE:
         return
@@ -136,9 +171,15 @@ def _instant_auto_pronounce(word):
         pass
 
 
-def worker_full_data_display(tgt, app):
+def worker_full_data_display(tgt, app, seq):
     """
     Загружает полные данные словаря и запускает автопроизношение.
+
+    Args:
+        tgt: Целевое слово
+        app: Экземпляр MainWindow
+        seq: Sequence number для защиты от race conditions
+
     Оптимизировано: автопроизношение в отдельном потоке (не блокирует).
     """
     # Проверяем кэш
@@ -148,8 +189,8 @@ def worker_full_data_display(tgt, app):
     if not full_data:
         full_data = fetch_full_dictionary_data(tgt)
 
-    # Обновляем UI
-    app.after(0, lambda: app.update_full_data_ui(full_data))
+    # Обновляем UI с проверкой seq
+    app.after(0, lambda: app.update_full_data_ui(full_data, seq))
 
     # Автопроизношение в отдельном потоке (не блокирует worker)
     if cfg.get_bool("USER", "AutoPronounce"):
@@ -173,29 +214,49 @@ def process_word_async(word, app):
 
 
 def process_word_parallel(w, app):
-    """Параллельная обработка слова (перевод + изображение + словарь)"""
+    """
+    Параллельная обработка слова (перевод + изображение + словарь).
+
+    КРИТИЧНО: Использует sequence numbers для защиты от race conditions.
+    Порядок выполнения:
+    1. Проверка сложности слова
+    2. Сброс UI и получение нового seq
+    3. Запуск 3 параллельных workers с передачей seq
+
+    Race condition защита:
+    - Если пользователь быстро печатает "word1" → "word2" → "word3"
+    - Каждое слово получает уникальный seq: 1, 2, 3
+    - Workers могут завершиться в любом порядке: 3 → 1 → 2
+    - UI обновится только данными от seq=3 (последнее слово)
+    - Данные от seq=1,2 будут проигнорированы
+    """
     too_simple, tgt = is_word_too_simple(w, int(app.vocab_var.get()))
     if too_simple:
         return
 
-    app.after(0, lambda: app.reset_ui(tgt))
+    # КРИТИЧНО: reset_ui() возвращает seq для текущего слова
+    # Все последующие workers используют этот seq для валидации
+    seq = app.reset_ui(tgt)
 
     # Быстрая проверка кэша
     cached_res = check_cache_only(tgt)
     if cached_res:
         # Thread-safe: используем app.after() для UI обновлений
-        app.after(0, lambda: app.update_trans_ui(cached_res, "Cache"))
+        app.after(0, lambda: app.update_trans_ui(cached_res, "Cache", seq))
     else:
-        threading.Thread(target=worker_trans, args=(tgt, app), daemon=True).start()
+        threading.Thread(target=worker_trans, args=(tgt, app, seq), daemon=True).start()
 
-    threading.Thread(target=worker_img, args=(tgt, app), daemon=True).start()
-    threading.Thread(target=worker_full_data_display, args=(tgt, app), daemon=True).start()
+    # Запускаем параллельные workers с передачей seq
+    threading.Thread(target=worker_img, args=(tgt, app, seq), daemon=True).start()
+    threading.Thread(target=worker_full_data_display, args=(tgt, app, seq), daemon=True).start()
 
 
 def handle_clipboard_word(app):
     """
     Обрабатывает слово из буфера обмена (Ctrl+C).
+
     Оптимизировано: throttling вместо проверки последнего слова.
+    Минимальная задержка между обработками: 500ms.
     """
     global CLIPBOARD_LAST_TIME
 
@@ -230,7 +291,9 @@ def handle_clipboard_word(app):
 def trigger_sentence_update(app, need_translate=False):
     """
     Обновляет отображение предложения с отложенным переводом.
+
     Оптимизировано: Lock для предотвращения race condition.
+    Перевод откладывается на 100ms для снижения нагрузки при быстрой печати.
     """
     global TRANSLATION_TIMER
 
@@ -265,7 +328,17 @@ def trigger_sentence_update(app, need_translate=False):
 def on_key_event(e):
     """
     Глобальный обработчик клавиатурных событий.
-    Оптимизировано: кэшированная проверка раскладки + фикс бага keyboard.
+
+    Оптимизировано:
+    - Кэшированная проверка раскладки (500ms TTL)
+    - Фикс бага keyboard library (русские символы → английские)
+    - Минимальные обновления UI (only when needed)
+
+    Логика обработки:
+    - Обычные символы → добавляются в BUFFER и EDITOR
+    - Пробел/пунктуация → триггерит обработку BUFFER и перевод
+    - Backspace/Delete → очистка BUFFER
+    - Enter → завершение предложения
     """
     global BUFFER, SENTENCE_FINISHED
 

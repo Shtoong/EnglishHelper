@@ -6,12 +6,15 @@ GUI главного окна EnglishHelper.
 - TranslationTooltip: всплывающие подсказки с hover-переводами
 - ResizeGrip: виджет для изменения размера окна
 
-Оптимизации:
-- Thread-safe cache update через Lock
-- Graceful degradation для playsound
-- Удалён мёртвый код
-- Импорты на уровне модуля
-- Исправлен memory leak в tooltip анимации
+Оптимизации v2.2:
+- Sequence number для защиты от race conditions
+- LRU cache для переводов (предотвращение утечки памяти)
+- Token validation для tooltip (предотвращение "зависших" подсказок)
+- FIX: Комплексное решение mousewheel с отменой tooltip timer
+- FIX: Mousewheel forwarding через tooltip window
+- FIX: Mousewheel на всех hover-виджетах и синонимах
+- Debouncing для обновления статуса
+- Кэширование content_width при render
 """
 
 import tkinter as tk
@@ -22,11 +25,11 @@ import os
 import threading
 import time
 from typing import Dict, List, Optional, Tuple, Callable
+from collections import OrderedDict
 
 # Graceful degradation: playsound может отсутствовать
 try:
     from playsound import playsound
-
     PLAYSOUND_AVAILABLE = True
 except ImportError:
     playsound = None
@@ -38,6 +41,41 @@ from gui.styles import COLORS, FONTS
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
 from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
+
+
+class LRUCache:
+    """
+    Простой LRU кэш с ограничением размера.
+
+    Используется для trans_cache чтобы предотвратить утечку памяти
+    при работе с большим количеством слов.
+    """
+
+    def __init__(self, max_size: int = 200):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+
+    def get(self, key: str) -> Optional[str]:
+        """Получить значение и переместить в конец (most recently used)"""
+        if key not in self.cache:
+            return None
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def set(self, key: str, value: str) -> None:
+        """Установить значение и удалить старейший элемент если превышен лимит"""
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.cache
+
+    def clear(self) -> None:
+        """Очистить весь кэш"""
+        self.cache.clear()
 
 
 class ResizeGrip(tk.Label):
@@ -87,6 +125,8 @@ class TranslationTooltip:
     - Spinner анимация во время загрузки
     - Автоматическое позиционирование рядом с курсором
     - Thread-safe обновление из worker потоков
+    - Token validation для предотвращения race conditions
+    - FIX: Mousewheel forwarding для предотвращения зависаний скролла
     """
 
     def __init__(self, parent):
@@ -97,7 +137,12 @@ class TranslationTooltip:
         self.spinner_chars = ["|", "/", "-", "\\"]
 
     def _create_window(self, x: int, y: int) -> None:
-        """Создаёт топмост окно tooltip"""
+        """
+        Создаёт топмост окно tooltip.
+
+        FIX: Добавлен mousewheel forwarding для предотвращения
+        перехвата событий скролла tooltip window.
+        """
         if self.tip_window:
             return
 
@@ -109,6 +154,21 @@ class TranslationTooltip:
         self.tip_window.wm_geometry(f"+{x}+{y}")
         self.tip_window.wm_attributes("-topmost", True)
 
+        # FIX: Пробрасываем mousewheel через tooltip window к parent
+        def forward_mousewheel(e):
+            """
+            Перенаправляет событие mousewheel в главное окно.
+            Предотвращает зависание скролла когда tooltip перекрывает контент.
+            """
+            self.parent.event_generate("<MouseWheel>",
+                                      delta=e.delta,
+                                      x=e.x_root,
+                                      y=e.y_root,
+                                      when="now")
+            return "break"
+
+        self.tip_window.bind("<MouseWheel>", forward_mousewheel)
+
         frame = tk.Frame(
             self.tip_window,
             bg=COLORS["bg_secondary"],
@@ -116,6 +176,9 @@ class TranslationTooltip:
             highlightthickness=1
         )
         frame.pack()
+
+        # FIX: Bind на frame тоже
+        frame.bind("<MouseWheel>", forward_mousewheel)
 
         self.label = tk.Label(
             frame,
@@ -129,6 +192,9 @@ class TranslationTooltip:
             pady=4
         )
         self.label.pack()
+
+        # FIX: Bind на label тоже (полное покрытие)
+        self.label.bind("<MouseWheel>", forward_mousewheel)
 
     def show_loading(self, x: int, y: int) -> None:
         """Показывает анимированный spinner загрузки"""
@@ -186,7 +252,9 @@ class MainWindow(tk.Tk):
     - Кастомный resize grip
     - Прокручиваемый контент с автоматическим scrollbar
     - Параллельные worker потоки для I/O операций
-    - Hover-переводы с кэшированием
+    - Hover-переводы с кэшированием (LRU)
+    - Защита от race conditions через sequence numbers
+    - FIX: Комплексное решение проблем mousewheel
     """
 
     # ===== UI КОНСТАНТЫ =====
@@ -194,11 +262,12 @@ class MainWindow(tk.Tk):
     IMAGE_PADDING = 40
     CONTENT_PADDING = 60
     DEFAULT_WRAPLENGTH = 380
-    TRANSLATION_PADDING = 20  # Padding для wraplength перевода
+    TRANSLATION_PADDING = 20
     MAX_SYNONYMS = 5
     HOVER_DELAY_MS = 300
     MIN_WINDOW_WIDTH = 300
     MIN_WINDOW_HEIGHT = 400
+    TRANS_CACHE_SIZE = 200  # Максимальный размер LRU кэша переводов
 
     def __init__(self):
         super().__init__()
@@ -222,12 +291,24 @@ class MainWindow(tk.Tk):
         self.dragging_allowed = False
         self.popup = None
         self.current_audio_urls = [None, None]
-        self.trans_cache = {}
         self.hover_timer = None
         self.search_callback = None
 
-        # Thread-safe флаг для cache update (FIX: добавлен Lock)
+        # LRU кэш для переводов (предотвращает утечку памяти)
+        self.trans_cache = LRUCache(max_size=self.TRANS_CACHE_SIZE)
+
+        # Thread-safe флаг для cache update
         self._cache_update_lock = threading.Lock()
+
+        # Sequence number для защиты от race conditions
+        self._current_word_seq = 0
+        self._word_seq_lock = threading.Lock()
+
+        # Token для tooltip validation (предотвращает "зависшие" tooltips)
+        self._tooltip_token = 0
+
+        # Debouncing для статуса (оптимизация)
+        self._status_update_pending = False
 
         # Создание виджетов
         self.sent_window = SentenceWindow(self)
@@ -370,6 +451,11 @@ class MainWindow(tk.Tk):
         КРИТИЧНО: Этот метод вызывается ПОСЛЕ _create_vocab_slider() и _create_status_bar(),
         чтобы scrollable content занял только оставшееся пространство между верхними
         элементами и нижним фреймом (который уже запакован с side="bottom").
+
+        FIX: Mousewheel binding на трёх уровнях для 100% покрытия:
+        1. scroll_container - работает над пустыми областями контейнера
+        2. canvas_scroll - работает над scrollbar и canvas
+        3. scrollable_frame - работает над всем контентом (Label, Frame, etc)
         """
         scroll_container = tk.Frame(self, bg=COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
@@ -392,7 +478,16 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
-        self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # FIX: Трёхуровневый bind для mousewheel (оптимальное решение)
+        # Уровень 1: Контейнер (работает над пустыми областями)
+        scroll_container.bind("<MouseWheel>", self._on_mousewheel)
+
+        # Уровень 2: Canvas (работает над scrollbar и canvas)
+        self.canvas_scroll.bind("<MouseWheel>", self._on_mousewheel)
+
+        # Уровень 3: Scrollable frame (работает над всем контентом)
+        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
 
     def _create_vocab_slider(self) -> None:
         """
@@ -583,13 +678,29 @@ class MainWindow(tk.Tk):
         else:
             self.sent_window.withdraw()
 
+    # ===== SEQUENCE NUMBER MANAGEMENT =====
+
+    def _get_next_word_seq(self) -> int:
+        """
+        Получить следующий sequence number для нового слова.
+
+        Thread-safe инкремент для защиты от race conditions.
+        """
+        with self._word_seq_lock:
+            self._current_word_seq += 1
+            return self._current_word_seq
+
+    def _is_current_word(self, seq: int) -> bool:
+        """Проверить актуальность sequence number"""
+        return seq == self._current_word_seq
+
     # ===== CACHE MANAGEMENT =====
 
     def update_cache_button(self) -> None:
         """
         Запускает параллельный подсчет размера кэша.
 
-        FIX: Использует Lock для thread-safe проверки флага.
+        Thread-safe через Lock.
         """
         with self._cache_update_lock:
             threading.Thread(
@@ -598,11 +709,7 @@ class MainWindow(tk.Tk):
             ).start()
 
     def _worker_update_cache_size(self) -> None:
-        """
-        Worker для подсчета размера кэша.
-
-        ОПТИМИЗАЦИЯ: get_cache_size_mb импортируется на уровне модуля.
-        """
+        """Worker для подсчета размера кэша"""
         size_mb = get_cache_size_mb()
 
         if size_mb >= 1000:
@@ -622,11 +729,7 @@ class MainWindow(tk.Tk):
         ).start()
 
     def _worker_clear_cache(self) -> None:
-        """
-        Worker для удаления файлов кэша.
-
-        ОПТИМИЗАЦИЯ: clear_cache импортируется на уровне модуля.
-        """
+        """Worker для удаления файлов кэша"""
         deleted_count = clear_cache()
 
         self.after(0, lambda: self.btn_cache.config(text=f"Cleared ({deleted_count})"))
@@ -636,9 +739,47 @@ class MainWindow(tk.Tk):
 
     # ===== SCROLLBAR LOGIC =====
 
-    def _on_mousewheel(self, event) -> None:
-        """Обработка скролла колесом мыши"""
-        self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _on_mousewheel(self, event) -> str:
+        """
+        Обработка скролла колесом мыши.
+
+        FIX v2.2: Комплексная защита от зависания:
+        1. Отменяем tooltip timer (предотвращает блокировку после 300ms)
+        2. Скрываем tooltip если открыт (освобождаем focus)
+        3. Принудительно обновляем scroll region (гарантируем актуальность bbox)
+        4. Проверяем boundary limits (не скроллим за пределы)
+        5. Блокируем event propagation (один вызов вместо трёх)
+        """
+        # FIX 1: Отменяем tooltip timer при скролле
+        # КРИТИЧНО: Tooltip timer блокирует события через 300ms после hover
+        if self.hover_timer:
+            self.after_cancel(self.hover_timer)
+            self.hover_timer = None
+
+        # FIX 2: Скрываем tooltip если открыт
+        # КРИТИЧНО: Tooltip window может перехватывать focus и блокировать события
+        self.tooltip.hide()
+
+        # FIX 3: Принудительное обновление scroll region
+        # Гарантирует что bbox("all") актуален после render новых виджетов
+        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
+
+        # FIX 4: Проверяем boundary limits
+        current_view = self.canvas_scroll.yview()
+        delta = int(-1 * (event.delta / 120))
+
+        # Блокируем скролл за пределы контента
+        if delta < 0 and current_view[0] <= 0.0:
+            return "break"  # Уже в начале, не скроллим вверх
+        if delta > 0 and current_view[1] >= 1.0:
+            return "break"  # Уже в конце, не скроллим вниз
+
+        # Выполняем скролл
+        self.canvas_scroll.yview_scroll(delta, "units")
+
+        # FIX 5: Блокируем event propagation
+        # Предотвращает множественные вызовы от трёх bind
+        return "break"
 
     def _on_frame_configure(self, event) -> None:
         """Обновление scroll region при изменении контента"""
@@ -660,21 +801,37 @@ class MainWindow(tk.Tk):
     # ===== TOOLTIP LOGIC =====
 
     def _bind_hover_translation(self, widget: tk.Widget, text: str) -> None:
-        """Универсальный биндинг hover-перевода для любого виджета"""
+        """
+        Универсальный биндинг hover-перевода для любого виджета.
+
+        FIX: Добавлен mousewheel binding для предотвращения зависаний.
+        КРИТИЧНО: Label с hover binding должен пробрасывать mousewheel,
+        иначе скролл не работает когда курсор над текстом.
+        """
         widget.bind("<Enter>", lambda e: self._on_text_enter(e, text))
         widget.bind("<Leave>", self._on_text_leave)
 
+        # FIX: КРИТИЧНО! Пробрасываем mousewheel через виджет
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+
     def _on_text_enter(self, event, text: str) -> None:
         """Обработка наведения на текст"""
-        if text in self.trans_cache:
-            self.tooltip.show_text(self.trans_cache[text], event.x_root, event.y_root)
+        # Проверяем LRU кэш
+        cached_trans = self.trans_cache.get(text)
+        if cached_trans:
+            self.tooltip.show_text(cached_trans, event.x_root, event.y_root)
             return
 
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
+
+        # Инкрементируем token для новой tooltip операции
+        self._tooltip_token += 1
+        current_token = self._tooltip_token
+
         self.hover_timer = self.after(
             self.HOVER_DELAY_MS,
-            lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
+            lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root, current_token)
         )
 
     def _on_text_leave(self, event) -> None:
@@ -684,20 +841,26 @@ class MainWindow(tk.Tk):
             self.hover_timer = None
         self.tooltip.hide()
 
-    def _fetch_and_show_tooltip(self, text: str, x: int, y: int) -> None:
-        """Загрузка и отображение тултипа"""
+    def _fetch_and_show_tooltip(self, text: str, x: int, y: int, token: int) -> None:
+        """Загрузка и отображение тултипа с token validation"""
         self.tooltip.show_loading(x, y)
         threading.Thread(
             target=self._worker_tooltip_trans,
-            args=(text, x, y),
+            args=(text, x, y, token),
             daemon=True
         ).start()
 
-    def _worker_tooltip_trans(self, text: str, x: int, y: int) -> None:
-        """Worker для загрузки перевода"""
+    def _worker_tooltip_trans(self, text: str, x: int, y: int, token: int) -> None:
+        """
+        Worker для загрузки перевода.
+
+        FIX: Добавлен token validation для предотвращения race conditions.
+        """
         trans = fetch_sentence_translation(text)
-        if trans:
-            self.trans_cache[text] = trans
+
+        # Проверяем актуальность token перед обновлением UI
+        if trans and token == self._tooltip_token:
+            self.trans_cache.set(text, trans)
             self.after(0, lambda: self.tooltip.update_text(trans))
 
     # ===== SYNONYM LOGIC =====
@@ -719,8 +882,16 @@ class MainWindow(tk.Tk):
 
     # ===== DATA DISPLAY =====
 
-    def update_full_data_ui(self, full_data: Optional[Dict]) -> None:
-        """Обновление UI полными данными словаря"""
+    def update_full_data_ui(self, full_data: Optional[Dict], seq: int) -> None:
+        """
+        Обновление UI полными данными словаря.
+
+        FIX: Добавлена проверка sequence number для защиты от race conditions.
+        """
+        # Игнорируем устаревшие данные
+        if not self._is_current_word(seq):
+            return
+
         # Очистка
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
@@ -743,8 +914,11 @@ class MainWindow(tk.Tk):
         # Обработка фонетики и аудио
         self._process_phonetics(full_data.get("phonetics", []))
 
+        # Кэшируем content_width для оптимизации (избегаем множественных winfo_width())
+        current_content_width = self.content_width
+
         # Отображение meanings
-        self._render_meanings(full_data.get("meanings", []))
+        self._render_meanings(full_data.get("meanings", []), current_content_width)
 
     def _process_phonetics(self, phonetics: List[Dict]) -> None:
         """Обработка фонетической информации"""
@@ -786,8 +960,12 @@ class MainWindow(tk.Tk):
 
         return us, uk
 
-    def _render_meanings(self, meanings: List[Dict]) -> None:
-        """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
+    def _render_meanings(self, meanings: List[Dict], content_width: int) -> None:
+        """
+        Отрисовка meanings (части речи, определения, примеры, синонимы).
+
+        FIX: content_width передаётся как аргумент для оптимизации.
+        """
         for meaning in meanings:
             # Часть речи
             pos = meaning.get("partOfSpeech", "")
@@ -800,7 +978,7 @@ class MainWindow(tk.Tk):
             ).pack(fill="x", pady=(10, 5))
 
             # Определения и примеры
-            self._render_definitions(meaning.get("definitions", []))
+            self._render_definitions(meaning.get("definitions", []), content_width)
 
             # Синонимы
             self._render_synonyms(meaning.get("synonyms", []))
@@ -813,15 +991,19 @@ class MainWindow(tk.Tk):
                 width=360
             ).pack(pady=5)
 
-    def _render_definitions(self, definitions: List[Dict]) -> None:
-        """Отрисовка определений и примеров"""
+    def _render_definitions(self, definitions: List[Dict], content_width: int) -> None:
+        """
+        Отрисовка определений и примеров.
+
+        FIX: content_width передаётся как аргумент для оптимизации.
+        """
         for i, defn in enumerate(definitions, 1):
             # Определение
             def_text = f"{i}. {defn.get('definition', '')}"
             lbl_def = self._create_label(
                 self.scrollable_frame,
                 text=def_text,
-                wraplength=self.content_width,
+                wraplength=content_width,
                 justify="left",
                 anchor="w"
             )
@@ -836,7 +1018,7 @@ class MainWindow(tk.Tk):
                     text=ex_text,
                     font_key="example",
                     fg_key="text_accent",
-                    wraplength=self.content_width,
+                    wraplength=content_width,
                     justify="left",
                     anchor="w"
                 )
@@ -844,12 +1026,20 @@ class MainWindow(tk.Tk):
                 self._bind_hover_translation(lbl_ex, defn.get("example", ""))
 
     def _render_synonyms(self, synonyms: List[str]) -> None:
-        """Отрисовка синонимов в виде тегов"""
+        """
+        Отрисовка синонимов в виде тегов.
+
+        FIX: Добавлен mousewheel binding на syn_frame и каждый synonym tag
+        для предотвращения зависаний при скролле над синонимами.
+        """
         if not synonyms:
             return
 
         syn_frame = tk.Frame(self.scrollable_frame, bg=COLORS["bg"])
         syn_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        # FIX: КРИТИЧНО! Mousewheel на syn_frame
+        syn_frame.bind("<MouseWheel>", self._on_mousewheel)
 
         tk.Label(
             syn_frame,
@@ -884,6 +1074,10 @@ class MainWindow(tk.Tk):
                 "<Button-1>",
                 lambda e, w=syn: self.on_synonym_click(w)
             )
+
+            # FIX: КРИТИЧНО! Mousewheel на каждом synonym tag
+            # Без этого скролл не работает когда курсор над синонимом
+            tag.bind("<MouseWheel>", self._on_mousewheel)
 
     # ===== AUDIO PLAYER =====
 
@@ -926,13 +1120,22 @@ class MainWindow(tk.Tk):
 
             if os.path.exists(cache_path):
                 playsound(cache_path)
-        except Exception:
+        except (IOError, OSError, ValueError, KeyError):
+            # Известные ошибки — молча игнорируем (graceful degradation)
             pass
 
     # ===== IMAGE HANDLER =====
 
-    def update_img_ui(self, path: Optional[str], source: str) -> None:
-        """Обновление изображения с компактным placeholder"""
+    def update_img_ui(self, path: Optional[str], source: str, seq: int) -> None:
+        """
+        Обновление изображения с компактным placeholder.
+
+        FIX: Добавлена проверка sequence number для защиты от race conditions.
+        """
+        # Игнорируем устаревшие данные
+        if not self._is_current_word(seq):
+            return
+
         if path:
             try:
                 pil_img = Image.open(path)
@@ -949,12 +1152,12 @@ class MainWindow(tk.Tk):
                 )
                 self.img_container.image = tki
                 self.sources["img"] = source
-            except Exception:
+            except (IOError, OSError):
                 self._show_no_image_placeholder()
         else:
             self._show_no_image_placeholder()
 
-        self.refresh_status()
+        self._schedule_status_update()
 
     def _show_no_image_placeholder(self) -> None:
         """Компактный текстовый placeholder"""
@@ -970,13 +1173,38 @@ class MainWindow(tk.Tk):
 
     # ===== STATUS =====
 
+    def _schedule_status_update(self) -> None:
+        """
+        Планирует обновление статуса через after_idle (debouncing).
+
+        FIX: Предотвращает множественные обновления при одновременной
+        загрузке перевода и изображения.
+        """
+        if self._status_update_pending:
+            return
+        self._status_update_pending = True
+        self.after_idle(self._do_status_update)
+
+    def _do_status_update(self) -> None:
+        """Выполняет отложенное обновление статуса"""
+        self.refresh_status()
+        self._status_update_pending = False
+
     def refresh_status(self) -> None:
         """Обновляет строку статуса"""
         status_text = f"Tr: {self.sources['trans']} • Img: {self.sources['img']}"
         self.lbl_status.config(text=status_text)
 
-    def update_trans_ui(self, data: Optional[Dict], source: str) -> None:
-        """Обновление перевода с fallback"""
+    def update_trans_ui(self, data: Optional[Dict], source: str, seq: int) -> None:
+        """
+        Обновление перевода с fallback.
+
+        FIX: Добавлена проверка sequence number для защиты от race conditions.
+        """
+        # Игнорируем устаревшие данные
+        if not self._is_current_word(seq):
+            return
+
         if data and data.get("rus"):
             self.lbl_rus.config(
                 text=data["rus"],
@@ -996,10 +1224,21 @@ class MainWindow(tk.Tk):
                     fg=COLORS["text_faint"]
                 )
             self.sources["trans"] = "—"
-        self.refresh_status()
 
-    def reset_ui(self, word: str) -> None:
-        """Сброс UI для нового слова"""
+        self._schedule_status_update()
+
+    def reset_ui(self, word: str) -> int:
+        """
+        Сброс UI для нового слова.
+
+        FIX: Возвращает sequence number для передачи в workers.
+
+        Returns:
+            Sequence number для текущего слова
+        """
+        # Получаем новый sequence number
+        seq = self._get_next_word_seq()
+
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
         self.lbl_rus.config(
@@ -1019,9 +1258,10 @@ class MainWindow(tk.Tk):
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
 
-        # Используем константу TRANSLATION_PADDING
         self.lbl_rus.config(wraplength=self.winfo_width() - self.TRANSLATION_PADDING)
         self.update_cache_button()
+
+        return seq
 
     # ===== WINDOW CONTROLS =====
 
@@ -1035,7 +1275,6 @@ class MainWindow(tk.Tk):
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
 
-        # Используем константу TRANSLATION_PADDING
         self.lbl_rus.config(wraplength=new_w - self.TRANSLATION_PADDING)
         self.scrollable_frame.event_generate("<Configure>")
 
