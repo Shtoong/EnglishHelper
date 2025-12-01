@@ -6,13 +6,15 @@ GUI главного окна EnglishHelper.
 - TranslationTooltip: всплывающие подсказки с hover-переводами
 - ResizeGrip: виджет для изменения размера окна
 
-Оптимизации v2.2:
+Оптимизации v2.3 (финальная):
 - Sequence number для защиты от race conditions
 - LRU cache для переводов (предотвращение утечки памяти)
 - Token validation для tooltip (предотвращение "зависших" подсказок)
-- FIX: Комплексное решение mousewheel с отменой tooltip timer
-- FIX: Mousewheel forwarding через tooltip window
-- FIX: Mousewheel на всех hover-виджетах и синонимах
+- Комплексное решение mousewheel с отменой tooltip timer
+- Mousewheel forwarding через tooltip window
+- Mousewheel на всех hover-виджетах и синонимах
+- FIX: Унифицированный CONTENT_PADDING для всего контента
+- FIX: Корректное закрытие network sessions при выходе
 - Debouncing для обновления статуса
 - Кэширование content_width при render
 """
@@ -40,7 +42,12 @@ from config import cfg, AUDIO_DIR, get_cache_size_mb, clear_cache
 from gui.styles import COLORS, FONTS
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
-from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
+from network import (
+    fetch_sentence_translation,
+    download_and_cache_audio,
+    get_audio_cache_path,
+    close_all_sessions
+)
 
 
 class LRUCache:
@@ -126,7 +133,7 @@ class TranslationTooltip:
     - Автоматическое позиционирование рядом с курсором
     - Thread-safe обновление из worker потоков
     - Token validation для предотвращения race conditions
-    - FIX: Mousewheel forwarding для предотвращения зависаний скролла
+    - Mousewheel forwarding для предотвращения зависаний скролла
     """
 
     def __init__(self, parent):
@@ -177,7 +184,7 @@ class TranslationTooltip:
         )
         frame.pack()
 
-        # FIX: Bind на frame тоже
+        # Mousewheel на frame
         frame.bind("<MouseWheel>", forward_mousewheel)
 
         self.label = tk.Label(
@@ -193,7 +200,7 @@ class TranslationTooltip:
         )
         self.label.pack()
 
-        # FIX: Bind на label тоже (полное покрытие)
+        # Mousewheel на label (полное покрытие)
         self.label.bind("<MouseWheel>", forward_mousewheel)
 
     def show_loading(self, x: int, y: int) -> None:
@@ -254,15 +261,15 @@ class MainWindow(tk.Tk):
     - Параллельные worker потоки для I/O операций
     - Hover-переводы с кэшированием (LRU)
     - Защита от race conditions через sequence numbers
-    - FIX: Комплексное решение проблем mousewheel
+    - Комплексное решение проблем mousewheel
+    - Унифицированный padding для визуальной консистентности
     """
 
     # ===== UI КОНСТАНТЫ =====
     IMAGE_MAX_HEIGHT = 250
     IMAGE_PADDING = 40
-    CONTENT_PADDING = 60
+    CONTENT_PADDING = 20  # Единый padding для всего контента (перевод, определения)
     DEFAULT_WRAPLENGTH = 380
-    TRANSLATION_PADDING = 20
     MAX_SYNONYMS = 5
     HOVER_DELAY_MS = 300
     MIN_WINDOW_WIDTH = 300
@@ -321,7 +328,16 @@ class MainWindow(tk.Tk):
 
     @property
     def content_width(self) -> int:
-        """Ширина области контента с учетом padding"""
+        """
+        Ширина области контента с учетом padding.
+
+        Используется для wraplength всех текстовых элементов:
+        - Перевод (lbl_rus)
+        - Определения
+        - Примеры
+
+        Гарантирует визуальную консистентность всех текстов.
+        """
         return self.winfo_width() - self.CONTENT_PADDING
 
     def _init_ui(self) -> None:
@@ -1232,6 +1248,7 @@ class MainWindow(tk.Tk):
         Сброс UI для нового слова.
 
         FIX: Возвращает sequence number для передачи в workers.
+        FIX: Использует единый CONTENT_PADDING через property.
 
         Returns:
             Sequence number для текущего слова
@@ -1258,7 +1275,8 @@ class MainWindow(tk.Tk):
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
 
-        self.lbl_rus.config(wraplength=self.winfo_width() - self.TRANSLATION_PADDING)
+        # FIX: Используем content_width property (единый padding)
+        self.lbl_rus.config(wraplength=self.content_width)
         self.update_cache_button()
 
         return seq
@@ -1266,7 +1284,11 @@ class MainWindow(tk.Tk):
     # ===== WINDOW CONTROLS =====
 
     def resize_window(self, dx: int, dy: int) -> None:
-        """Изменение размера окна"""
+        """
+        Изменение размера окна.
+
+        FIX: Использует content_width property (единый padding).
+        """
         current_x = self.winfo_x()
         current_y = self.winfo_y()
 
@@ -1275,7 +1297,8 @@ class MainWindow(tk.Tk):
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
 
-        self.lbl_rus.config(wraplength=new_w - self.TRANSLATION_PADDING)
+        # FIX: Используем content_width property
+        self.lbl_rus.config(wraplength=self.content_width)
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self) -> None:
@@ -1396,7 +1419,18 @@ class MainWindow(tk.Tk):
         self.dragging_allowed = False
 
     def close_app(self) -> None:
-        """Закрытие приложения"""
+        """
+        Закрытие приложения с корректной очисткой ресурсов.
+
+        FIX: Добавлено закрытие network sessions для предотвращения ResourceWarning.
+
+        Порядок:
+        1. Unhook клавиатуры
+        2. Закрытие requests sessions
+        3. Уничтожение UI
+        4. Выход из программы
+        """
         keyboard.unhook_all()
+        close_all_sessions()  # FIX: Корректное закрытие network ресурсов
         self.destroy()
         sys.exit(0)
