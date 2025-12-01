@@ -6,15 +6,18 @@ GUI главного окна EnglishHelper.
 - TranslationTooltip: всплывающие подсказки с hover-переводами
 - ResizeGrip: виджет для изменения размера окна
 
-Оптимизации v2.3 (финальная):
+Оптимизации v2.4 (финальная + IDE warnings fix):
 - Sequence number для защиты от race conditions
 - LRU cache для переводов (предотвращение утечки памяти)
 - Token validation для tooltip (предотвращение "зависших" подсказок)
 - Комплексное решение mousewheel с отменой tooltip timer
 - Mousewheel forwarding через tooltip window
 - Mousewheel на всех hover-виджетах и синонимах
-- FIX: Унифицированный CONTENT_PADDING для всего контента
-- FIX: Корректное закрытие network sessions при выходе
+- Унифицированный CONTENT_PADDING для всего контента
+- Корректное закрытие network sessions при выходе
+- FIX: Конкретные типы исключений вместо bare except
+- FIX: Instance attributes объявлены в __init__
+- FIX: Префикс _ для неиспользуемых event параметров
 - Debouncing для обновления статуса
 - Кэширование content_width при render
 """
@@ -263,6 +266,7 @@ class MainWindow(tk.Tk):
     - Защита от race conditions через sequence numbers
     - Комплексное решение проблем mousewheel
     - Унифицированный padding для визуальной консистентности
+    - Корректная обработка исключений и instance attributes
     """
 
     # ===== UI КОНСТАНТЫ =====
@@ -295,11 +299,15 @@ class MainWindow(tk.Tk):
 
         # Состояние UI
         self.sources = {"trans": "wait", "img": "wait"}
-        self.dragging_allowed = False
         self.popup = None
         self.current_audio_urls = [None, None]
         self.hover_timer = None
         self.search_callback = None
+
+        # FIX: Window dragging state (объявляем в __init__ для IDE)
+        self.x = 0
+        self.y = 0
+        self.dragging_allowed = False
 
         # LRU кэш для переводов (предотвращает утечку памяти)
         self.trans_cache = LRUCache(max_size=self.TRANS_CACHE_SIZE)
@@ -389,7 +397,7 @@ class MainWindow(tk.Tk):
         )
         btn_close.config(font=FONTS["close_btn"])
         btn_close.pack(side="right", padx=10)
-        btn_close.bind("<Button-1>", lambda e: self.close_app())
+        btn_close.bind("<Button-1>", lambda _e: self.close_app())
 
     def _create_word_header(self) -> None:
         """Заголовок слова с фонетикой и аудио"""
@@ -428,7 +436,7 @@ class MainWindow(tk.Tk):
             pady=2
         )
         btn.pack(side="left", padx=2)
-        btn.bind("<Button-1>", lambda e: self.play_audio(index))
+        btn.bind("<Button-1>", lambda _e: self.play_audio(index))
         return btn
 
     def _create_translation_display(self) -> None:
@@ -536,7 +544,7 @@ class MainWindow(tk.Tk):
         )
         btn_minus.config(font=("Consolas", 12, "bold"))
         btn_minus.pack(side="left", padx=2)
-        btn_minus.bind("<Button-1>", lambda e: self.change_level(-1))
+        btn_minus.bind("<Button-1>", lambda _e: self.change_level(-1))
 
         # Слайдер
         self.scale = tk.Scale(
@@ -563,7 +571,7 @@ class MainWindow(tk.Tk):
         )
         btn_plus.config(font=("Consolas", 12, "bold"))
         btn_plus.pack(side="left", padx=2)
-        btn_plus.bind("<Button-1>", lambda e: self.change_level(1))
+        btn_plus.bind("<Button-1>", lambda _e: self.change_level(1))
 
         # Отображение значения
         self.lbl_lvl_val = self._create_label(
@@ -647,10 +655,10 @@ class MainWindow(tk.Tk):
         btn.bind("<Button-1>", command)
 
         # Hover эффект
-        def on_enter(e):
+        def on_enter(_e):
             btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
-        def on_leave(e):
+        def on_leave(_e):
             if config_key:
                 self._update_toggle_button_style(btn, config_key)
             else:
@@ -735,7 +743,7 @@ class MainWindow(tk.Tk):
 
         self.after(0, lambda: self.btn_cache.config(text=text))
 
-    def clear_cache(self, event=None) -> None:
+    def clear_cache(self, _event=None) -> None:
         """Очищает кэш и обновляет кнопку"""
         self.btn_cache.config(text="Clearing...")
 
@@ -797,12 +805,12 @@ class MainWindow(tk.Tk):
         # Предотвращает множественные вызовы от трёх bind
         return "break"
 
-    def _on_frame_configure(self, event) -> None:
+    def _on_frame_configure(self, _event) -> None:
         """Обновление scroll region при изменении контента"""
         self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
         self._check_scroll_needed()
 
-    def _on_canvas_configure(self, event) -> None:
+    def _on_canvas_configure(self, _event) -> None:
         """Обновление scrollbar при изменении размера canvas"""
         self._check_scroll_needed()
 
@@ -850,7 +858,7 @@ class MainWindow(tk.Tk):
             lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root, current_token)
         )
 
-    def _on_text_leave(self, event) -> None:
+    def _on_text_leave(self, _event) -> None:
         """Обработка ухода курсора с текста"""
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
@@ -891,9 +899,9 @@ class MainWindow(tk.Tk):
         self._on_text_enter(event, text)
         widget.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
-    def _on_synonym_leave(self, event, widget: tk.Label) -> None:
+    def _on_synonym_leave(self, _event, widget: tk.Label) -> None:
         """Уход курсора с синонима"""
-        self._on_text_leave(event)
+        self._on_text_leave(_event)
         widget.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
     # ===== DATA DISPLAY =====
@@ -1088,7 +1096,7 @@ class MainWindow(tk.Tk):
             )
             tag.bind(
                 "<Button-1>",
-                lambda e, w=syn: self.on_synonym_click(w)
+                lambda _e, w=syn: self.on_synonym_click(w)
             )
 
             # FIX: КРИТИЧНО! Mousewheel на каждом synonym tag
@@ -1321,7 +1329,7 @@ class MainWindow(tk.Tk):
 
         self._update_toggle_button_style(button, config_key)
 
-    def toggle_sentence_window(self, event=None) -> None:
+    def toggle_sentence_window(self, _event=None) -> None:
         """Переключение окна предложений"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
@@ -1334,7 +1342,7 @@ class MainWindow(tk.Tk):
 
         self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
 
-    def toggle_auto_pronounce(self, event=None) -> None:
+    def toggle_auto_pronounce(self, _event=None) -> None:
         """Переключение автопроизношения"""
         self._toggle_setting("AutoPronounce", self.btn_toggle_pronounce)
 
@@ -1352,7 +1360,7 @@ class MainWindow(tk.Tk):
         """Сохранение уровня"""
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
-    def show_popup(self, event) -> None:
+    def show_popup(self, _event) -> None:
         """Показать popup с ignored words"""
         self.dragging_allowed = False
         if not self.popup:
@@ -1365,7 +1373,7 @@ class MainWindow(tk.Tk):
         self.popup.show(x, y)
         self.update_popup_content()
 
-    def move_popup(self, event) -> None:
+    def move_popup(self, _event) -> None:
         """Обновление popup при движении слайдера"""
         self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
         self.update_popup_content()
@@ -1375,7 +1383,7 @@ class MainWindow(tk.Tk):
         if self.popup:
             self.popup.update_words(self.vocab_var.get())
 
-    def hide_popup_and_save(self, event) -> None:
+    def hide_popup_and_save(self, _event) -> None:
         """Скрытие popup и сохранение"""
         if self.popup:
             self.popup.destroy()
@@ -1385,17 +1393,24 @@ class MainWindow(tk.Tk):
     # ===== WINDOW DRAGGING =====
 
     def start_move(self, event) -> None:
-        """Начало перемещения окна"""
+        """
+        Начало перемещения окна.
+
+        FIX: Конкретные типы исключений вместо bare except.
+        """
         widget = event.widget
 
         no_drag = (tk.Button, tk.Scale, tk.Scrollbar, tk.Entry)
         if isinstance(widget, no_drag) or widget == self.grip:
             return
 
+        # FIX: Конкретные исключения вместо голого except
         try:
             if widget.cget("cursor") == "hand2":
                 return
-        except:
+        except (AttributeError, tk.TclError):
+            # AttributeError: виджет не имеет метода cget (например Frame)
+            # tk.TclError: виджет удалён или некорректен
             pass
 
         self.dragging_allowed = True
@@ -1411,7 +1426,7 @@ class MainWindow(tk.Tk):
         new_y = self.winfo_y() + (event.y - self.y)
         self.geometry(f"+{new_x}+{new_y}")
 
-    def stop_move(self, event) -> None:
+    def stop_move(self, _event) -> None:
         """Завершение перемещения"""
         if self.dragging_allowed:
             cfg.set("USER", "WindowX", self.winfo_x())
