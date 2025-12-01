@@ -1,31 +1,31 @@
 """
-Configuration management module for EnglishHelper.
+Модуль управления конфигурацией для EnglishHelper.
 
-Handles:
-- Settings persistence (INI file)
-- Directory structure initialization
-- Cache size calculation and cleanup
-- Singleton ConfigManager instance
+Обрабатывает:
+- Сохранение настроек (INI файл)
+- Инициализацию структуры директорий
+- Подсчет размера кэша и его очистку
+- Singleton экземпляр ConfigManager
 
-Performance optimizations:
-- os.scandir() for efficient directory traversal
-- Lazy directory creation
-- Minimal system calls
+Оптимизации производительности:
+- os.scandir() для эффективного обхода директорий
+- Ленивое создание директорий
+- Минимум системных вызовов
 """
 
 import configparser
 import os
 from typing import Final
 
-# ===== CONSTANTS =====
+# ===== КОНСТАНТЫ =====
 CONFIG_FILE: Final[str] = "settings.ini"
 DATA_DIR: Final[str] = "Data"
 IMG_DIR: Final[str] = os.path.join(DATA_DIR, "Images")
 DICT_DIR: Final[str] = os.path.join(DATA_DIR, "Dicts")
 AUDIO_DIR: Final[str] = os.path.join(DATA_DIR, "Audio")
-VOCAB_FILE: Final[str] = os.path.join(DATA_DIR, "vocab_10k.txt")
+VOCAB_FILE: Final[str] = os.path.join(DATA_DIR, "vocab_20k.txt")
 
-_MB: Final[int] = 1048576  # Bytes in megabyte (1024 * 1024)
+_MB: Final[int] = 1048576  # Байт в мегабайте (1024 * 1024)
 
 DEFAULT_CONFIG: Final[dict] = {
     "API": {
@@ -45,11 +45,11 @@ DEFAULT_CONFIG: Final[dict] = {
 }
 
 
-# ===== DIRECTORY INITIALIZATION =====
+# ===== ИНИЦИАЛИЗАЦИЯ ДИРЕКТОРИЙ =====
 def _ensure_directories():
     """
-    Lazy directory creation - called only when ConfigManager is instantiated.
-    Uses exist_ok=True to avoid race conditions.
+    Ленивое создание директорий - вызывается только при создании ConfigManager.
+    Использует exist_ok=True для избежания race conditions.
     """
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(IMG_DIR, exist_ok=True)
@@ -57,16 +57,16 @@ def _ensure_directories():
     os.makedirs(AUDIO_DIR, exist_ok=True)
 
 
-# ===== CONFIG MANAGER =====
+# ===== МЕНЕДЖЕР КОНФИГУРАЦИИ =====
 class ConfigManager:
     """
-    Manages application configuration with automatic validation and persistence.
+    Управляет конфигурацией приложения с автоматической валидацией и сохранением.
 
-    Thread-safety: This class is NOT thread-safe. Use the singleton 'cfg' instance.
+    Потокобезопасность: Этот класс НЕ потокобезопасен. Используйте singleton 'cfg'.
     """
 
     def __init__(self):
-        _ensure_directories()  # Moved here from module level
+        _ensure_directories()
 
         self.config = configparser.ConfigParser()
         if not os.path.exists(CONFIG_FILE):
@@ -76,15 +76,15 @@ class ConfigManager:
             self._validate()
 
     def _create_default(self):
-        """Creates default configuration file"""
+        """Создает файл конфигурации по умолчанию"""
         for section, options in DEFAULT_CONFIG.items():
             self.config[section] = options
         self._save()
 
     def _validate(self):
         """
-        Validates configuration integrity and adds missing keys.
-        Critical for backward compatibility when adding new settings.
+        Валидирует целостность конфигурации и добавляет недостающие ключи.
+        Критично для обратной совместимости при добавлении новых настроек.
         """
         changed = False
         for section, options in DEFAULT_CONFIG.items():
@@ -99,24 +99,24 @@ class ConfigManager:
             self._save()
 
     def _save(self):
-        """Persists configuration to disk"""
+        """Сохраняет конфигурацию на диск"""
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             self.config.write(f)
 
     def get(self, section: str, key: str, fallback=None) -> str:
-        """Retrieves configuration value as string"""
+        """Получает значение конфигурации как строку"""
         return self.config.get(section, key, fallback=fallback)
 
     def get_bool(self, section: str, key: str, fallback=False) -> bool:
-        """Retrieves configuration value as boolean"""
+        """Получает значение конфигурации как boolean"""
         return self.config.getboolean(section, key, fallback=fallback)
 
     def set(self, section: str, key: str, value) -> None:
         """
-        Updates configuration value and saves to disk.
+        Обновляет значение конфигурации и сохраняет на диск.
 
-        Performance note: Every set() triggers file I/O. For batch updates,
-        consider implementing set_batch() method.
+        Примечание: Каждый set() вызывает файловый I/O. Для пакетных обновлений
+        рассмотрите реализацию метода set_batch().
         """
         if not self.config.has_section(section):
             self.config.add_section(section)
@@ -124,19 +124,19 @@ class ConfigManager:
         self._save()
 
 
-# ===== CACHE UTILITIES =====
+# ===== УТИЛИТЫ КЭША =====
 
 def get_cache_size_mb() -> float:
     """
-    Calculates total size of cache directory in megabytes.
+    Вычисляет общий размер директории кэша в мегабайтах.
 
-    Optimizations:
-    - Single os.walk() traversal
-    - No redundant os.path.exists() checks (walk guarantees existence)
-    - Graceful handling of inaccessible files
+    Оптимизации:
+    - Один проход os.walk()
+    - Без избыточных os.path.exists() (walk гарантирует существование)
+    - Graceful обработка недоступных файлов
 
     Returns:
-        Cache size in MB rounded to 1 decimal place
+        Размер кэша в MB с округлением до 1 знака
     """
     if not os.path.exists(DATA_DIR):
         return 0.0
@@ -150,10 +150,10 @@ def get_cache_size_mb() -> float:
                 try:
                     total_size += os.path.getsize(filepath)
                 except OSError:
-                    # File deleted/inaccessible during iteration - skip it
+                    # Файл удален/недоступен во время итерации - пропускаем
                     continue
     except OSError:
-        # Root directory access error
+        # Ошибка доступа к корневой директории
         return 0.0
 
     return round(total_size / _MB, 1)
@@ -161,18 +161,18 @@ def get_cache_size_mb() -> float:
 
 def clear_cache() -> int:
     """
-    Deletes all cached files while preserving directory structure.
+    Удаляет все закэшированные файлы с сохранением структуры директорий.
 
-    Optimization: Uses os.scandir() instead of listdir() + isfile()
-    - scandir() returns DirEntry objects with cached stat() results
-    - Eliminates redundant system calls (2x performance improvement)
+    Оптимизация: Использует os.scandir() вместо listdir() + isfile()
+    - scandir() возвращает DirEntry объекты с кэшированными результатами stat()
+    - Устраняет избыточные системные вызовы (2x улучшение производительности)
 
-    Preserves:
-    - vocab_10k.txt (in DATA_DIR root)
-    - Directory structure
+    Сохраняет:
+    - vocab_20k.txt (в корне DATA_DIR)
+    - Структуру директорий
 
     Returns:
-        Number of files successfully deleted
+        Количество успешно удаленных файлов
     """
     deleted_count = 0
 
@@ -181,8 +181,8 @@ def clear_cache() -> int:
             continue
 
         try:
-            # os.scandir() is 2-3x faster than os.listdir() + os.path.isfile()
-            # because DirEntry caches stat() results
+            # os.scandir() в 2-3 раза быстрее чем os.listdir() + os.path.isfile()
+            # потому что DirEntry кэширует результаты stat()
             with os.scandir(subdir) as entries:
                 for entry in entries:
                     if entry.is_file():
@@ -190,16 +190,16 @@ def clear_cache() -> int:
                             os.unlink(entry.path)
                             deleted_count += 1
                         except OSError:
-                            # File locked/deleted by another process - skip
+                            # Файл заблокирован/удален другим процессом - пропускаем
                             continue
         except OSError:
-            # Directory access error - skip entire directory
+            # Ошибка доступа к директории - пропускаем всю директорию
             continue
 
     return deleted_count
 
 
-# ===== SINGLETON INSTANCE =====
-# CRITICAL: Import this singleton instead of creating new ConfigManager instances
-# to avoid file I/O overhead and potential race conditions
+# ===== SINGLETON ЭКЗЕМПЛЯР =====
+# КРИТИЧНО: Импортируйте этот singleton вместо создания новых экземпляров ConfigManager
+# чтобы избежать избыточного файлового I/O и потенциальных race conditions
 cfg = ConfigManager()
