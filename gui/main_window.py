@@ -87,7 +87,7 @@ class TranslationTooltip:
             justify='left',
             bg=COLORS["bg_secondary"],
             fg=COLORS["text_main"],
-            font=("Segoe UI", 10),
+            font=FONTS["tooltip"],  # FIXED: was ("Segoe UI", 10)
             wraplength=300,
             padx=8,
             pady=4
@@ -215,7 +215,7 @@ class MainWindow(tk.Tk):
             fg_key="close_btn",
             cursor="hand2"
         )
-        btn_close.config(font=("Arial", 12))
+        btn_close.config(font=FONTS["close_btn"])  # FIXED: was ("Arial", 12)
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
@@ -248,7 +248,7 @@ class MainWindow(tk.Tk):
         btn = tk.Label(
             parent,
             text=text,
-            font=("Segoe UI", 9),
+            font=FONTS["audio_btn"],  # FIXED: was ("Segoe UI", 9)
             bg=COLORS["button_bg"],
             fg=COLORS["text_main"],
             cursor="hand2",
@@ -268,15 +268,14 @@ class MainWindow(tk.Tk):
             wraplength=self.DEFAULT_WRAPLENGTH,
             justify="center"
         )
-        self.lbl_rus.config(font=("Segoe UI", 33))
+        self.lbl_rus.config(font=FONTS["translation"])  # FIXED: was ("Segoe UI", 33)
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
 
     def _create_image_container(self):
-        """ИСПРАВЛЕНО: Контейнер для изображения БЕЗ фиксированной высоты"""
+        """Контейнер для изображения"""
         self.img_container = tk.Label(
             self,
             bg=COLORS["bg"]
-            # УДАЛЕНО: height=8
         )
         self.img_container.pack(pady=5)
 
@@ -537,7 +536,6 @@ class MainWindow(tk.Tk):
         time.sleep(1)
 
         self.after(0, lambda: self.update_cache_button())
-        print(f"Cache cleared: {deleted_count} files deleted")
 
     # ===== SCROLLBAR LOGIC =====
 
@@ -756,7 +754,7 @@ class MainWindow(tk.Tk):
         tk.Label(
             syn_frame,
             text="Syn:",
-            font=("Segoe UI", 9, "bold"),
+            font=FONTS["synonym_label"],  # FIXED: was ("Segoe UI", 9, "bold")
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
         ).pack(side="left", anchor="n")
@@ -765,7 +763,7 @@ class MainWindow(tk.Tk):
             tag = tk.Label(
                 syn_frame,
                 text=syn,
-                font=("Segoe UI", 8),
+                font=FONTS["synonym"],  # FIXED: was ("Segoe UI", 8) - это был баг! Должно быть 10
                 bg=COLORS["bg_secondary"],
                 fg=COLORS["text_main"],
                 padx=6,
@@ -822,33 +820,33 @@ class MainWindow(tk.Tk):
 
             if os.path.exists(cache_path):
                 playsound(cache_path)
-        except Exception as e:
-            print(f"Audio Play Error: {e}")
+        except Exception:
+            pass
 
     def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
         """
-        ИСПРАВЛЕНО: Воспроизведение без блокирующего ожидания.
+        Воспроизведение без блокирующего ожидания.
         Используется для автопроизношения.
         """
         try:
             from playsound import playsound
             from network import streaming_play_and_cache
 
-            # ✅ Если файл есть - играем мгновенно
+            # Если файл есть - играем мгновенно
             if os.path.exists(cache_path):
                 playsound(cache_path)
                 return
 
-            # ✅ Иначе - streaming + кэширование
+            # Иначе - streaming + кэширование
             streaming_play_and_cache(fallback_url, cache_path)
 
-        except Exception as e:
-            print(f"Audio Play Error: {e}")
+        except Exception:
+            pass
 
     # ===== IMAGE HANDLER =====
 
     def update_img_ui(self, path: Optional[str], source: str):
-        """ИСПРАВЛЕНО: Обновление изображения с компактным placeholder"""
+        """Обновление изображения с компактным placeholder"""
         if path:
             try:
                 pil_img = Image.open(path)
@@ -865,8 +863,7 @@ class MainWindow(tk.Tk):
                 )
                 self.img_container.image = tki
                 self.sources["img"] = source
-            except Exception as e:
-                print(f"Img Error: {e}")
+            except Exception:
                 self._show_no_image_placeholder()
         else:
             self._show_no_image_placeholder()
@@ -874,7 +871,7 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def _show_no_image_placeholder(self):
-        """ИСПРАВЛЕНО: Компактный текстовый placeholder"""
+        """Компактный текстовый placeholder"""
         self.img_container.config(
             image="",
             text="No image",
@@ -882,7 +879,6 @@ class MainWindow(tk.Tk):
             font=("Segoe UI", 9),
             fg=COLORS["text_faint"],
             bg=COLORS["bg"]
-            # УДАЛЕНО: width и height
         )
         self.sources["img"] = "—"
 

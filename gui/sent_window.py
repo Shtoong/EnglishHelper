@@ -9,7 +9,6 @@ class ResizeGrip(tk.Label):
         self.resize_callback = resize_callback
         self.finish_callback = finish_callback
 
-        # ВАЖНО: return "break" останавливает всплытие события к родительскому окну
         self.bind("<Button-1>", self._start_resize)
         self.bind("<B1-Motion>", self._do_resize)
         self.bind("<ButtonRelease-1>", self._stop_resize)
@@ -20,7 +19,7 @@ class ResizeGrip(tk.Label):
     def _start_resize(self, event):
         self._x = event.x_root
         self._y = event.y_root
-        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
+        return "break"
 
     def _do_resize(self, event):
         dx = event.x_root - self._x
@@ -28,11 +27,11 @@ class ResizeGrip(tk.Label):
         self.resize_callback(dx, dy)
         self._x = event.x_root
         self._y = event.y_root
-        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
+        return "break"
 
     def _stop_resize(self, event):
         self.finish_callback()
-        return "break"  # <--- ОСТАНАВЛИВАЕМ MOVE LOGIC
+        return "break"
 
 
 class SentenceWindow(tk.Toplevel):
@@ -48,7 +47,7 @@ class SentenceWindow(tk.Toplevel):
         self.wm_attributes("-topmost", True)
         self.configure(bg=COLORS["bg"])
 
-        # --- ГЕОМЕТРИЯ ---
+        # Геометрия
         geo_str = cfg.get("USER", "SentWindowGeometry", "600x150+700+100")
         self.geometry(geo_str)
 
@@ -60,20 +59,33 @@ class SentenceWindow(tk.Toplevel):
         except:
             pass
 
-        # Используем шрифт как в главном окне для перевода слова
-        translation_font = ("Segoe UI", 33)
-
         self.content_frame = tk.Frame(self, bg=COLORS["bg"])
         self.content_frame.pack(fill="both", expand=True)
 
-        self.lbl_eng = tk.Label(self.content_frame, text="", font=("Segoe UI", 12), bg=COLORS["bg"],
-                                fg=COLORS["text_main"], justify="left", anchor="w",
-                                wraplength=initial_wrap)
+        # FIXED: было ("Segoe UI", 12)
+        self.lbl_eng = tk.Label(
+            self.content_frame,
+            text="",
+            font=FONTS["sentence_text"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_main"],
+            justify="left",
+            anchor="w",
+            wraplength=initial_wrap
+        )
         self.lbl_eng.pack(fill="x", padx=15, pady=(10, 5))
 
-        self.lbl_rus = tk.Label(self.content_frame, text="...", font=translation_font, bg=COLORS["bg"],
-                                fg=COLORS["text_accent"], justify="left", anchor="w",
-                                wraplength=initial_wrap)
+        # FIXED: было ("Segoe UI", 33)
+        self.lbl_rus = tk.Label(
+            self.content_frame,
+            text="...",
+            font=FONTS["translation"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"],
+            justify="left",
+            anchor="w",
+            wraplength=initial_wrap
+        )
         self.lbl_rus.pack(fill="x", padx=15, pady=(5, 10))
 
         # Grip с callback-ом
@@ -90,7 +102,7 @@ class SentenceWindow(tk.Toplevel):
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<ButtonRelease-1>", self.stop_move)
 
-        # НОВОЕ: Применяем начальное состояние видимости из настроек
+        # Применяем начальное состояние видимости из настроек
         if not cfg.get_bool("USER", "ShowSentenceWindow", True):
             self.withdraw()
 
@@ -108,19 +120,14 @@ class SentenceWindow(tk.Toplevel):
 
     def resize_window(self, dx, dy):
         """Изменение размера окна"""
-        # 1. Явно берем текущие координаты, чтобы зафиксировать окно на месте
         current_x = self.winfo_x()
         current_y = self.winfo_y()
 
-        # 2. Считаем новый размер
         new_w = max(self.MIN_WINDOW_WIDTH, self.winfo_width() + dx)
         new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
 
-        # 3. Применяем размер И позицию одновременно.
-        # Это гарантирует, что левый верхний угол гвоздями прибит к current_x, current_y
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
 
-        # 4. Обновляем перенос текста
         self.after_idle(lambda: self._update_wraplength(new_w))
 
     def _update_wraplength(self, width):

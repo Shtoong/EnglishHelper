@@ -1,36 +1,68 @@
-# Стиль Monkeytype (Serika Dark)
-# Лаконичная, матовая, высококонтрастная палитра
+"""
+UI theme definitions for EnglishHelper.
 
-COLORS = {
-    "bg": "#323437",  # Основной фон (Мягкий темно-серый)
-    "bg_secondary": "#2C2E31",  # Более темный фон (для треков слайдеров и инпутов)
+Based on Monkeytype's Serika Dark color scheme.
+All UI components should reference these constants instead of hardcoding values.
 
-    "text_main": "#D1D0C5",  # Основной текст (Светло-серый/Бежевый)
-    "text_header": "#E2B714",  # Главное слово (Фирменный желтый Monkeytype)
+Color philosophy:
+- High contrast for readability during typing practice
+- Matte palette to reduce eye strain
+- Consistent accent color (#E2B714) for focus elements
 
-    "text_accent": "#E2B714",  # Акцент (для примеров и выделений)
-    "text_faint": "#646669",  # Приглушенный текст (для тех. информации)
+Font philosophy:
+- Segoe UI for general text (native Windows rendering)
+- Consolas for monospace elements (phonetics, console)
+- Hierarchical sizing for visual importance
+"""
 
-    "text_phonetic": "#646669",  # Транскрипция (в цвет вторичного текста)
-    "text_pos": "#E2B714",  # Часть речи (Акцент)
-    "text_synonym": "#D1D0C5",  # Синонимы (Как основной текст)
+from typing import Final
 
-    "close_btn": "#CA4754",  # Кнопка закрытия (Мягкий красный/Error color)
-    "separator": "#646669",  # Разделители
+# ===== COLOR SCHEME =====
+COLORS: Final[dict[str, str]] = {
+    # === BACKGROUNDS ===
+    "bg": "#323437",  # Main window background (soft dark gray)
+    "bg_secondary": "#2C2E31",  # Buttons, sliders, input fields (darker gray)
 
-    "button_bg": "#2C2E31",  # Фон кнопок (Темнее фона)
-    "button_hover": "#45474A",  # При наведении
+    # === TEXT COLORS ===
+    "text_main": "#D1D0C5",  # Primary text (light gray/beige)
+    "text_header": "#E2B714",  # Main word display (Monkeytype signature yellow)
+    "text_accent": "#E2B714",  # Examples, highlights, active elements
+    "text_faint": "#646669",  # Secondary info, timestamps, disabled state
+    "text_phonetic": "#646669",  # Phonetic transcription (subdued)
+    "text_pos": "#E2B714",  # Part of speech tags (accent)
 
-    "resize_grip": "#646669",  # Цвет треугольника ресайза
+    # === UI ELEMENTS ===
+    "close_btn": "#CA4754",  # Close button (soft red/error color)
+    "separator": "#646669",  # Horizontal dividers
+    "button_bg": "#2C2E31",  # Button backgrounds
+    "resize_grip": "#646669",  # Window resize handle
 }
 
-FONTS = {
-    "header": ("Segoe UI", 18, "bold"),  # Чуть крупнее
-    "phonetic": ("Consolas", 11),  # Моноширинный для транскрипции
-    "pos": ("Segoe UI", 10, "italic"),
-    "definition": ("Segoe UI", 11),  # Основной текст читабельнее
-    "example": ("Segoe UI", 10, "italic"),
-    "synonym": ("Segoe UI", 10),
-    "ui": ("Segoe UI", 9),
-    "console": ("Consolas", 8)
+# ===== FONT DEFINITIONS =====
+FONTS: Final[dict[str, tuple]] = {
+    # === HEADERS & TITLES ===
+    "header": ("Segoe UI", 18, "bold"),  # Main word display
+    "close_btn": ("Arial", 12),  # Close button (X)
+
+    # === TRANSLATION DISPLAY ===
+    "translation": ("Segoe UI", 33),  # Primary translation (large, prominent)
+
+    # === DICTIONARY DATA ===
+    "phonetic": ("Consolas", 11),  # Phonetic transcription (monospace)
+    "pos": ("Segoe UI", 10, "italic"),  # Part of speech
+    "definition": ("Segoe UI", 11),  # Word definitions
+    "example": ("Segoe UI", 10, "italic"),  # Usage examples
+
+    # === SYNONYMS ===
+    "synonym": ("Segoe UI", 10),  # Synonym tags
+    "synonym_label": ("Segoe UI", 9, "bold"),  # "Syn:" label
+
+    # === UI CONTROLS ===
+    "audio_btn": ("Segoe UI", 9),  # Audio playback buttons (US/UK)
+    "tooltip": ("Segoe UI", 10),  # Hover translation tooltips
+    "ui": ("Segoe UI", 9),  # General UI elements (labels, buttons)
+    "console": ("Consolas", 8),  # Monospace text (popup word list)
+
+    # === SENTENCE WINDOW ===
+    "sentence_text": ("Segoe UI", 12),  # English sentence display
 }
