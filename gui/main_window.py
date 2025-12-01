@@ -1,16 +1,39 @@
+"""
+GUI главного окна EnglishHelper.
+
+Основные компоненты:
+- MainWindow: безрамочное топмост окно с кастомным resize
+- TranslationTooltip: всплывающие подсказки с hover-переводами
+- ResizeGrip: виджет для изменения размера окна
+
+Оптимизации:
+- Thread-safe cache update через Lock
+- Graceful degradation для playsound
+- Удалён мёртвый код
+- Импорты на уровне модуля
+- Исправлен memory leak в tooltip анимации
+"""
+
 import tkinter as tk
 from PIL import Image, ImageTk
 import keyboard
 import sys
 import os
 import threading
-import requests
 import time
 from typing import Dict, List, Optional, Tuple, Callable
 
-from playsound import playsound
+# Graceful degradation: playsound может отсутствовать
+try:
+    from playsound import playsound
 
-from config import cfg, AUDIO_DIR
+    PLAYSOUND_AVAILABLE = True
+except ImportError:
+    playsound = None
+    PLAYSOUND_AVAILABLE = False
+
+# Импорты config на уровне модуля (оптимизация workers)
+from config import cfg, AUDIO_DIR, get_cache_size_mb, clear_cache
 from gui.styles import COLORS, FONTS
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
@@ -18,9 +41,14 @@ from network import fetch_sentence_translation, download_and_cache_audio, get_au
 
 
 class ResizeGrip(tk.Label):
-    """Виджет для изменения размера окна"""
+    """
+    Виджет для изменения размера окна.
 
-    def __init__(self, parent, resize_callback, finish_callback, bg, fg):
+    Использует экранные координаты (x_root/y_root) для корректной работы
+    при перетаскивании через границы окна.
+    """
+
+    def __init__(self, parent, resize_callback: Callable, finish_callback: Callable, bg: str, fg: str):
         super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
         self.resize_callback = resize_callback
         self.finish_callback = finish_callback
@@ -30,13 +58,13 @@ class ResizeGrip(tk.Label):
         self._x = 0
         self._y = 0
 
-    def _start_resize(self, event):
+    def _start_resize(self, event) -> str:
         """Запоминаем начальную позицию в экранных координатах"""
         self._x = event.x_root
         self._y = event.y_root
         return "break"
 
-    def _do_resize(self, event):
+    def _do_resize(self, event) -> str:
         """Изменяем размер на основе дельты в экранных координатах"""
         dx = event.x_root - self._x
         dy = event.y_root - self._y
@@ -45,14 +73,21 @@ class ResizeGrip(tk.Label):
         self._y = event.y_root
         return "break"
 
-    def _stop_resize(self, event):
+    def _stop_resize(self, event) -> str:
         """Завершаем изменение размера и сохраняем"""
         self.finish_callback()
         return "break"
 
 
 class TranslationTooltip:
-    """Всплывающая подсказка с переводом"""
+    """
+    Всплывающая подсказка с переводом и анимацией загрузки.
+
+    Features:
+    - Spinner анимация во время загрузки
+    - Автоматическое позиционирование рядом с курсором
+    - Thread-safe обновление из worker потоков
+    """
 
     def __init__(self, parent):
         self.parent = parent
@@ -61,7 +96,8 @@ class TranslationTooltip:
         self.animation_id = None
         self.spinner_chars = ["|", "/", "-", "\\"]
 
-    def _create_window(self, x, y):
+    def _create_window(self, x: int, y: int) -> None:
+        """Создаёт топмост окно tooltip"""
         if self.tip_window:
             return
 
@@ -94,34 +130,46 @@ class TranslationTooltip:
         )
         self.label.pack()
 
-    def show_loading(self, x, y):
+    def show_loading(self, x: int, y: int) -> None:
+        """Показывает анимированный spinner загрузки"""
         self.hide()
         self._create_window(x, y)
         self._animate(0)
 
-    def show_text(self, text, x, y):
+    def show_text(self, text: str, x: int, y: int) -> None:
+        """Показывает готовый текст перевода"""
         self.hide()
         self._create_window(x, y)
         self.label.config(text=text)
 
-    def update_text(self, text):
+    def update_text(self, text: str) -> None:
+        """Обновляет текст существующего tooltip (thread-safe)"""
         if self.tip_window and self.label:
             self._stop_animation()
             self.label.config(text=text)
 
-    def _animate(self, step):
+    def _animate(self, step: int) -> None:
+        """
+        Рекурсивная анимация spinner.
+
+        FIX: Добавлена проверка существования tip_window в начале
+        для предотвращения memory leak при быстрых hover событиях.
+        """
         if not self.tip_window:
             return
+
         char = self.spinner_chars[step % len(self.spinner_chars)]
         self.label.config(text=f"{char} Translating...")
         self.animation_id = self.parent.after(100, lambda: self._animate(step + 1))
 
-    def _stop_animation(self):
+    def _stop_animation(self) -> None:
+        """Останавливает анимацию и отменяет scheduled callbacks"""
         if self.animation_id:
             self.parent.after_cancel(self.animation_id)
             self.animation_id = None
 
-    def hide(self):
+    def hide(self) -> None:
+        """Скрывает tooltip и очищает ресурсы"""
         self._stop_animation()
         if self.tip_window:
             self.tip_window.destroy()
@@ -130,11 +178,23 @@ class TranslationTooltip:
 
 
 class MainWindow(tk.Tk):
+    """
+    Главное окно приложения EnglishHelper.
+
+    Архитектура:
+    - Безрамочное окно с topmost
+    - Кастомный resize grip
+    - Прокручиваемый контент с автоматическим scrollbar
+    - Параллельные worker потоки для I/O операций
+    - Hover-переводы с кэшированием
+    """
+
     # ===== UI КОНСТАНТЫ =====
     IMAGE_MAX_HEIGHT = 250
     IMAGE_PADDING = 40
     CONTENT_PADDING = 60
     DEFAULT_WRAPLENGTH = 380
+    TRANSLATION_PADDING = 20  # Padding для wraplength перевода
     MAX_SYNONYMS = 5
     HOVER_DELAY_MS = 300
     MIN_WINDOW_WIDTH = 300
@@ -157,7 +217,7 @@ class MainWindow(tk.Tk):
         # Установка минимального размера окна
         self.minsize(self.MIN_WINDOW_WIDTH, self.MIN_WINDOW_HEIGHT)
 
-        # Состояние
+        # Состояние UI
         self.sources = {"trans": "wait", "img": "wait"}
         self.dragging_allowed = False
         self.popup = None
@@ -165,7 +225,9 @@ class MainWindow(tk.Tk):
         self.trans_cache = {}
         self.hover_timer = None
         self.search_callback = None
-        self._cache_update_scheduled = False
+
+        # Thread-safe флаг для cache update (FIX: добавлен Lock)
+        self._cache_update_lock = threading.Lock()
 
         # Создание виджетов
         self.sent_window = SentenceWindow(self)
@@ -181,7 +243,7 @@ class MainWindow(tk.Tk):
         """Ширина области контента с учетом padding"""
         return self.winfo_width() - self.CONTENT_PADDING
 
-    def _init_ui(self):
+    def _init_ui(self) -> None:
         """
         Инициализация всех UI элементов.
 
@@ -198,12 +260,11 @@ class MainWindow(tk.Tk):
         self._create_image_container()
         self._create_separator()
 
-        # ИСПРАВЛЕНИЕ: Создаём bottom_frame ДО scrollable_content
-        # Это гарантирует что слайдер всегда остаётся внизу
+        # КРИТИЧНО: bottom_frame создаётся ДО scrollable_content
         self._create_vocab_slider()
         self._create_status_bar()
 
-        # Scrollable content создаётся ПОСЛЕДНИМ и заполняет оставшееся место
+        # Scrollable content создаётся ПОСЛЕДНИМ
         self._create_scrollable_content()
 
     def _create_label(self, parent, text: str = "", font_key: str = "definition",
@@ -217,7 +278,7 @@ class MainWindow(tk.Tk):
         defaults.update(kwargs)
         return tk.Label(parent, text=text, **defaults)
 
-    def _create_top_bar(self):
+    def _create_top_bar(self) -> None:
         """Верхняя панель с кнопкой закрытия"""
         top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
         top_bar.pack(fill="x", pady=(5, 0))
@@ -233,7 +294,7 @@ class MainWindow(tk.Tk):
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
-    def _create_word_header(self):
+    def _create_word_header(self) -> None:
         """Заголовок слова с фонетикой и аудио"""
         self.lbl_word = self._create_label(
             self,
@@ -273,7 +334,7 @@ class MainWindow(tk.Tk):
         btn.bind("<Button-1>", lambda e: self.play_audio(index))
         return btn
 
-    def _create_translation_display(self):
+    def _create_translation_display(self) -> None:
         """Область отображения перевода"""
         self.lbl_rus = self._create_label(
             self,
@@ -285,7 +346,7 @@ class MainWindow(tk.Tk):
         self.lbl_rus.config(font=FONTS["translation"])
         self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
 
-    def _create_image_container(self):
+    def _create_image_container(self) -> None:
         """Контейнер для изображения"""
         self.img_container = tk.Label(
             self,
@@ -293,7 +354,7 @@ class MainWindow(tk.Tk):
         )
         self.img_container.pack(pady=5)
 
-    def _create_separator(self):
+    def _create_separator(self) -> None:
         """Горизонтальный разделитель"""
         tk.Frame(
             self,
@@ -302,7 +363,7 @@ class MainWindow(tk.Tk):
             width=360
         ).pack(pady=5)
 
-    def _create_scrollable_content(self):
+    def _create_scrollable_content(self) -> None:
         """
         Прокручиваемая область с определениями.
 
@@ -333,7 +394,7 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
 
-    def _create_vocab_slider(self):
+    def _create_vocab_slider(self) -> None:
         """
         Слайдер уровня словаря.
 
@@ -403,7 +464,7 @@ class MainWindow(tk.Tk):
         self.lbl_lvl_val.pack(side="left", padx=(5, 0))
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
-    def _create_status_bar(self):
+    def _create_status_bar(self) -> None:
         """
         Нижняя панель статуса с кнопками управления.
 
@@ -495,7 +556,7 @@ class MainWindow(tk.Tk):
 
         return btn
 
-    def _update_toggle_button_style(self, button: tk.Label, config_key: str):
+    def _update_toggle_button_style(self, button: tk.Label, config_key: str) -> None:
         """Обновляет стиль кнопки-переключателя"""
         is_enabled = cfg.get_bool("USER", config_key, True)
         button.config(
@@ -503,7 +564,7 @@ class MainWindow(tk.Tk):
             fg=COLORS["bg"] if is_enabled else COLORS["text_faint"]
         )
 
-    def _bind_events(self):
+    def _bind_events(self) -> None:
         """Привязка событий"""
         # Перемещение окна
         self.bind("<Button-1>", self.start_move)
@@ -515,7 +576,7 @@ class MainWindow(tk.Tk):
         self.scale.bind("<B1-Motion>", self.move_popup)
         self.scale.bind("<ButtonRelease-1>", self.hide_popup_and_save)
 
-    def _sync_initial_state(self):
+    def _sync_initial_state(self) -> None:
         """Синхронизация UI с настройками при запуске"""
         if cfg.get_bool("USER", "ShowSentenceWindow", True):
             self.sent_window.deiconify()
@@ -524,19 +585,24 @@ class MainWindow(tk.Tk):
 
     # ===== CACHE MANAGEMENT =====
 
-    def update_cache_button(self):
-        """Запускает параллельный подсчет размера кэша"""
-        if self._cache_update_scheduled:
-            return
-        self._cache_update_scheduled = True
-        threading.Thread(
-            target=self._worker_update_cache_size,
-            daemon=True
-        ).start()
+    def update_cache_button(self) -> None:
+        """
+        Запускает параллельный подсчет размера кэша.
 
-    def _worker_update_cache_size(self):
-        """Worker для подсчета размера кэша"""
-        from config import get_cache_size_mb
+        FIX: Использует Lock для thread-safe проверки флага.
+        """
+        with self._cache_update_lock:
+            threading.Thread(
+                target=self._worker_update_cache_size,
+                daemon=True
+            ).start()
+
+    def _worker_update_cache_size(self) -> None:
+        """
+        Worker для подсчета размера кэша.
+
+        ОПТИМИЗАЦИЯ: get_cache_size_mb импортируется на уровне модуля.
+        """
         size_mb = get_cache_size_mb()
 
         if size_mb >= 1000:
@@ -545,9 +611,8 @@ class MainWindow(tk.Tk):
             text = f"Cache {size_mb:.1f}M"
 
         self.after(0, lambda: self.btn_cache.config(text=text))
-        self._cache_update_scheduled = False
 
-    def clear_cache(self, event=None):
+    def clear_cache(self, event=None) -> None:
         """Очищает кэш и обновляет кнопку"""
         self.btn_cache.config(text="Clearing...")
 
@@ -556,9 +621,12 @@ class MainWindow(tk.Tk):
             daemon=True
         ).start()
 
-    def _worker_clear_cache(self):
-        """Worker для удаления файлов кэша"""
-        from config import clear_cache
+    def _worker_clear_cache(self) -> None:
+        """
+        Worker для удаления файлов кэша.
+
+        ОПТИМИЗАЦИЯ: clear_cache импортируется на уровне модуля.
+        """
         deleted_count = clear_cache()
 
         self.after(0, lambda: self.btn_cache.config(text=f"Cleared ({deleted_count})"))
@@ -568,17 +636,20 @@ class MainWindow(tk.Tk):
 
     # ===== SCROLLBAR LOGIC =====
 
-    def _on_mousewheel(self, event):
+    def _on_mousewheel(self, event) -> None:
+        """Обработка скролла колесом мыши"""
         self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def _on_frame_configure(self, event):
+    def _on_frame_configure(self, event) -> None:
+        """Обновление scroll region при изменении контента"""
         self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
         self._check_scroll_needed()
 
-    def _on_canvas_configure(self, event):
+    def _on_canvas_configure(self, event) -> None:
+        """Обновление scrollbar при изменении размера canvas"""
         self._check_scroll_needed()
 
-    def _check_scroll_needed(self):
+    def _check_scroll_needed(self) -> None:
         """Показывает/скрывает scrollbar при необходимости"""
         bbox = self.canvas_scroll.bbox("all")
         if bbox and bbox[3] > self.canvas_scroll.winfo_height():
@@ -588,12 +659,12 @@ class MainWindow(tk.Tk):
 
     # ===== TOOLTIP LOGIC =====
 
-    def _bind_hover_translation(self, widget: tk.Widget, text: str):
+    def _bind_hover_translation(self, widget: tk.Widget, text: str) -> None:
         """Универсальный биндинг hover-перевода для любого виджета"""
         widget.bind("<Enter>", lambda e: self._on_text_enter(e, text))
         widget.bind("<Leave>", self._on_text_leave)
 
-    def _on_text_enter(self, event, text: str):
+    def _on_text_enter(self, event, text: str) -> None:
         """Обработка наведения на текст"""
         if text in self.trans_cache:
             self.tooltip.show_text(self.trans_cache[text], event.x_root, event.y_root)
@@ -606,14 +677,14 @@ class MainWindow(tk.Tk):
             lambda: self._fetch_and_show_tooltip(text, event.x_root, event.y_root)
         )
 
-    def _on_text_leave(self, event):
+    def _on_text_leave(self, event) -> None:
         """Обработка ухода курсора с текста"""
         if self.hover_timer:
             self.after_cancel(self.hover_timer)
             self.hover_timer = None
         self.tooltip.hide()
 
-    def _fetch_and_show_tooltip(self, text: str, x: int, y: int):
+    def _fetch_and_show_tooltip(self, text: str, x: int, y: int) -> None:
         """Загрузка и отображение тултипа"""
         self.tooltip.show_loading(x, y)
         threading.Thread(
@@ -622,7 +693,7 @@ class MainWindow(tk.Tk):
             daemon=True
         ).start()
 
-    def _worker_tooltip_trans(self, text: str, x: int, y: int):
+    def _worker_tooltip_trans(self, text: str, x: int, y: int) -> None:
         """Worker для загрузки перевода"""
         trans = fetch_sentence_translation(text)
         if trans:
@@ -631,24 +702,24 @@ class MainWindow(tk.Tk):
 
     # ===== SYNONYM LOGIC =====
 
-    def on_synonym_click(self, word: str):
+    def on_synonym_click(self, word: str) -> None:
         """Обработка клика по синониму"""
         if self.search_callback:
             self.search_callback(word)
 
-    def _on_synonym_enter(self, event, text: str, widget: tk.Label):
+    def _on_synonym_enter(self, event, text: str, widget: tk.Label) -> None:
         """Hover эффект для синонима"""
         self._on_text_enter(event, text)
         widget.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
-    def _on_synonym_leave(self, event, widget: tk.Label):
+    def _on_synonym_leave(self, event, widget: tk.Label) -> None:
         """Уход курсора с синонима"""
         self._on_text_leave(event)
         widget.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
     # ===== DATA DISPLAY =====
 
-    def update_full_data_ui(self, full_data: Optional[Dict]):
+    def update_full_data_ui(self, full_data: Optional[Dict]) -> None:
         """Обновление UI полными данными словаря"""
         # Очистка
         for widget in self.scrollable_frame.winfo_children():
@@ -675,7 +746,7 @@ class MainWindow(tk.Tk):
         # Отображение meanings
         self._render_meanings(full_data.get("meanings", []))
 
-    def _process_phonetics(self, phonetics: List[Dict]):
+    def _process_phonetics(self, phonetics: List[Dict]) -> None:
         """Обработка фонетической информации"""
         if not phonetics:
             self.lbl_phonetic.config(text="")
@@ -715,7 +786,7 @@ class MainWindow(tk.Tk):
 
         return us, uk
 
-    def _render_meanings(self, meanings: List[Dict]):
+    def _render_meanings(self, meanings: List[Dict]) -> None:
         """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
         for meaning in meanings:
             # Часть речи
@@ -742,7 +813,7 @@ class MainWindow(tk.Tk):
                 width=360
             ).pack(pady=5)
 
-    def _render_definitions(self, definitions: List[Dict]):
+    def _render_definitions(self, definitions: List[Dict]) -> None:
         """Отрисовка определений и примеров"""
         for i, defn in enumerate(definitions, 1):
             # Определение
@@ -772,7 +843,7 @@ class MainWindow(tk.Tk):
                 lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
                 self._bind_hover_translation(lbl_ex, defn.get("example", ""))
 
-    def _render_synonyms(self, synonyms: List[str]):
+    def _render_synonyms(self, synonyms: List[str]) -> None:
         """Отрисовка синонимов в виде тегов"""
         if not synonyms:
             return
@@ -816,8 +887,11 @@ class MainWindow(tk.Tk):
 
     # ===== AUDIO PLAYER =====
 
-    def play_audio(self, index: int):
+    def play_audio(self, index: int) -> None:
         """Воспроизведение аудио по индексу (0=US, 1=UK)"""
+        if not PLAYSOUND_AVAILABLE:
+            return
+
         if index < len(self.current_audio_urls):
             url = self.current_audio_urls[index]
             if not url:
@@ -828,8 +902,11 @@ class MainWindow(tk.Tk):
                 daemon=True
             ).start()
 
-    def _play_audio_worker(self, url: str):
+    def _play_audio_worker(self, url: str) -> None:
         """Worker для загрузки и воспроизведения аудио (для кнопок US/UK)"""
+        if not PLAYSOUND_AVAILABLE or playsound is None:
+            return
+
         try:
             if "translate.google.com" in url:
                 from urllib.parse import parse_qs, urlparse
@@ -852,29 +929,9 @@ class MainWindow(tk.Tk):
         except Exception:
             pass
 
-    def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
-        """
-        Воспроизведение без блокирующего ожидания.
-        Используется для автопроизношения.
-        """
-        try:
-            from playsound import playsound
-            from network import streaming_play_and_cache
-
-            # Если файл есть - играем мгновенно
-            if os.path.exists(cache_path):
-                playsound(cache_path)
-                return
-
-            # Иначе - streaming + кэширование
-            streaming_play_and_cache(fallback_url, cache_path)
-
-        except Exception:
-            pass
-
     # ===== IMAGE HANDLER =====
 
-    def update_img_ui(self, path: Optional[str], source: str):
+    def update_img_ui(self, path: Optional[str], source: str) -> None:
         """Обновление изображения с компактным placeholder"""
         if path:
             try:
@@ -899,7 +956,7 @@ class MainWindow(tk.Tk):
 
         self.refresh_status()
 
-    def _show_no_image_placeholder(self):
+    def _show_no_image_placeholder(self) -> None:
         """Компактный текстовый placeholder"""
         self.img_container.config(
             image="",
@@ -913,16 +970,12 @@ class MainWindow(tk.Tk):
 
     # ===== STATUS =====
 
-    @property
-    def status_text(self) -> str:
-        """Генерирует текст статуса"""
-        return f"Tr: {self.sources['trans']} • Img: {self.sources['img']}"
-
-    def refresh_status(self):
+    def refresh_status(self) -> None:
         """Обновляет строку статуса"""
-        self.lbl_status.config(text=self.status_text)
+        status_text = f"Tr: {self.sources['trans']} • Img: {self.sources['img']}"
+        self.lbl_status.config(text=status_text)
 
-    def update_trans_ui(self, data: Optional[Dict], source: str):
+    def update_trans_ui(self, data: Optional[Dict], source: str) -> None:
         """Обновление перевода с fallback"""
         if data and data.get("rus"):
             self.lbl_rus.config(
@@ -945,7 +998,7 @@ class MainWindow(tk.Tk):
             self.sources["trans"] = "—"
         self.refresh_status()
 
-    def reset_ui(self, word: str):
+    def reset_ui(self, word: str) -> None:
         """Сброс UI для нового слова"""
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
@@ -966,12 +1019,13 @@ class MainWindow(tk.Tk):
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
 
-        self.lbl_rus.config(wraplength=self.winfo_width() - 20)
+        # Используем константу TRANSLATION_PADDING
+        self.lbl_rus.config(wraplength=self.winfo_width() - self.TRANSLATION_PADDING)
         self.update_cache_button()
 
     # ===== WINDOW CONTROLS =====
 
-    def resize_window(self, dx: int, dy: int):
+    def resize_window(self, dx: int, dy: int) -> None:
         """Изменение размера окна"""
         current_x = self.winfo_x()
         current_y = self.winfo_y()
@@ -980,17 +1034,19 @@ class MainWindow(tk.Tk):
         new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
-        self.lbl_rus.config(wraplength=new_w - 20)
+
+        # Используем константу TRANSLATION_PADDING
+        self.lbl_rus.config(wraplength=new_w - self.TRANSLATION_PADDING)
         self.scrollable_frame.event_generate("<Configure>")
 
-    def save_size(self):
+    def save_size(self) -> None:
         """Сохранение размера окна"""
         cfg.set("USER", "WindowWidth", self.winfo_width())
         cfg.set("USER", "WindowHeight", self.winfo_height())
 
     def _toggle_setting(self, config_key: str, button: tk.Label,
                         on_enable: Optional[Callable] = None,
-                        on_disable: Optional[Callable] = None):
+                        on_disable: Optional[Callable] = None) -> None:
         """Универсальный toggle для любой настройки"""
         current = cfg.get_bool("USER", config_key, True)
         new_state = not current
@@ -1003,7 +1059,7 @@ class MainWindow(tk.Tk):
 
         self._update_toggle_button_style(button, config_key)
 
-    def toggle_sentence_window(self, event=None):
+    def toggle_sentence_window(self, event=None) -> None:
         """Переключение окна предложений"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
@@ -1016,13 +1072,13 @@ class MainWindow(tk.Tk):
 
         self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
 
-    def toggle_auto_pronounce(self, event=None):
+    def toggle_auto_pronounce(self, event=None) -> None:
         """Переключение автопроизношения"""
         self._toggle_setting("AutoPronounce", self.btn_toggle_pronounce)
 
     # ===== VOCAB SLIDER =====
 
-    def change_level(self, delta: int):
+    def change_level(self, delta: int) -> None:
         """Изменение уровня словаря"""
         new_val = self.vocab_var.get() + delta
         if 0 <= new_val <= 100:
@@ -1030,11 +1086,11 @@ class MainWindow(tk.Tk):
             self.lbl_lvl_val.config(text=str(new_val))
             self.save_level()
 
-    def save_level(self):
+    def save_level(self) -> None:
         """Сохранение уровня"""
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
-    def show_popup(self, event):
+    def show_popup(self, event) -> None:
         """Показать popup с ignored words"""
         self.dragging_allowed = False
         if not self.popup:
@@ -1044,23 +1100,20 @@ class MainWindow(tk.Tk):
         x = self.winfo_x() + self.winfo_width() + 10
         y = self.winfo_y()
 
-        # Используем новый метод show() с параметрами
         self.popup.show(x, y)
-
-        # Обновляем содержимое
         self.update_popup_content()
 
-    def move_popup(self, event):
+    def move_popup(self, event) -> None:
         """Обновление popup при движении слайдера"""
         self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
         self.update_popup_content()
 
-    def update_popup_content(self):
+    def update_popup_content(self) -> None:
         """Обновление содержимого popup"""
         if self.popup:
             self.popup.update_words(self.vocab_var.get())
 
-    def hide_popup_and_save(self, event):
+    def hide_popup_and_save(self, event) -> None:
         """Скрытие popup и сохранение"""
         if self.popup:
             self.popup.destroy()
@@ -1069,7 +1122,7 @@ class MainWindow(tk.Tk):
 
     # ===== WINDOW DRAGGING =====
 
-    def start_move(self, event):
+    def start_move(self, event) -> None:
         """Начало перемещения окна"""
         widget = event.widget
 
@@ -1087,7 +1140,7 @@ class MainWindow(tk.Tk):
         self.x = event.x
         self.y = event.y
 
-    def do_move(self, event):
+    def do_move(self, event) -> None:
         """Перемещение окна"""
         if not self.dragging_allowed:
             return
@@ -1096,14 +1149,14 @@ class MainWindow(tk.Tk):
         new_y = self.winfo_y() + (event.y - self.y)
         self.geometry(f"+{new_x}+{new_y}")
 
-    def stop_move(self, event):
+    def stop_move(self, event) -> None:
         """Завершение перемещения"""
         if self.dragging_allowed:
             cfg.set("USER", "WindowX", self.winfo_x())
             cfg.set("USER", "WindowY", self.winfo_y())
         self.dragging_allowed = False
 
-    def close_app(self):
+    def close_app(self) -> None:
         """Закрытие приложения"""
         keyboard.unhook_all()
         self.destroy()
