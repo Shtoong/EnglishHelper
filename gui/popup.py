@@ -1,219 +1,363 @@
+"""
+Popup окно для отображения vocab словаря.
+
+Показывает:
+- 100 слов до cutoff (ignored, бледные)
+- Разделительная черта
+- 100 слов после cutoff (active, яркие)
+
+Features:
+- Debounced обновление при движении слайдера
+- Auto-scroll к разделителю при обновлении
+- Кликабельные слова для поиска
+- Синхронизация высоты с главным окном
+"""
+
 import tkinter as tk
+from typing import Optional, Callable
 from gui.styles import COLORS, FONTS
-from config import cfg
-import vocab
+from gui.scrollbar import CustomScrollbar
+from vocab import get_word_range
 
 
 class VocabPopup(tk.Toplevel):
     """
-    Всплывающее окно с превью игнорируемых слов.
+    Popup окно для vocab словаря.
 
-    Автоматически подстраивается под высоту главного окна и показывает
-    максимальное количество слов без скроллинга.
-
-    Features:
-    - Динамическая высота = высота главного окна
-    - Адаптивное количество отображаемых слов
-    - Использование единой цветовой схемы приложения
-    - Прямой порядок сортировки (от меньшего ранга к большему)
-    - Многоточие в начале списка для индикации продолжения
+    Responsibilities:
+    - Отображение диапазона слов вокруг cutoff
+    - Debounced обновление списка при движении слайдера
+    - Кликабельные слова для поиска в главном окне
+    - Автоматическая прокрутка к разделителю
     """
 
-    # ===== КОНСТАНТЫ LAYOUT =====
-    WINDOW_WIDTH = 220  # Фиксированная ширина окна
-    HEADER_HEIGHT = 35  # Высота заголовка (с pady)
-    VERTICAL_PADDING = 30  # Суммарный вертикальный padding (запас)
-    LINE_HEIGHT = 13  # Высота одной строки текста (Consolas 8pt + межстрочный интервал)
-    MIN_VISIBLE_LINES = 10  # Минимум строк даже для маленького окна
-    MAX_VISIBLE_LINES = 100  # Максимум строк для огромного окна
-    TEXT_WIDGET_PADDING = 10  # Внутренние отступы Text widget (pady=10 в pack)
-    BOTTOM_MARGIN = 15  # Дополнительный запас снизу для предотвращения обрезки
+    # ===== КОНСТАНТЫ =====
+    WINDOW_WIDTH = 300
+    WORDS_BEFORE_CUTOFF = 100
+    WORDS_AFTER_CUTOFF = 100
+    DEBOUNCE_DELAY_MS = 300  # Задержка перед обновлением списка
+    BORDER_COLOR = "#FFD700"  # Желтая рамка
 
-    def __init__(self, parent):
-        """
-        Инициализация popup окна.
+    def __init__(self, master):
+        super().__init__(master)
+        self.main_window = master
 
-        Args:
-            parent: Главное окно приложения (MainWindow)
-        """
-        super().__init__(parent)
-        self.parent = parent
-
-        # ===== НАСТРОЙКА ОКНА =====
+        # Настройка окна
         self.overrideredirect(True)
         self.wm_attributes("-topmost", True)
-        self.configure(bg=COLORS["bg"])
-
-        # ===== СОЗДАНИЕ UI =====
-        self._create_ui()
-
-    def _create_ui(self):
-        """Создание элементов интерфейса"""
-        # Контейнер с border
-        frame = tk.Frame(
-            self,
+        self.configure(
             bg=COLORS["bg"],
-            highlightbackground=COLORS["text_accent"],
-            highlightthickness=2
+            highlightthickness=2,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR
         )
-        frame.pack(fill="both", expand=True)
+
+        # Состояние
+        self._update_timer: Optional[int] = None
+        self._current_cutoff = -1
+        self.search_callback: Optional[Callable[[str], None]] = None
+
+        # ===== ВЕРХНЯЯ ПАНЕЛЬ =====
+        self._create_top_bar()
+
+        # ===== SCROLLABLE CONTENT =====
+        self._create_scrollable_content()
+
+        # Скрываем окно до первого вызова
+        self.withdraw()
+
+    def _create_top_bar(self):
+        """Создает верхнюю панель с заголовком и крестиком"""
+        top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
+        top_bar.pack(fill="x", pady=(5, 0))
 
         # Заголовок
-        tk.Label(
-            frame,
-            text="Ignored (Known Words):",
-            font=("Segoe UI", 9, "bold"),
+        lbl_title = tk.Label(
+            top_bar,
+            text="Words",
+            font=FONTS["ui"],
             bg=COLORS["bg"],
-            fg=COLORS["text_accent"]
-        ).pack(pady=(5, 2))
-
-        # Текстовое поле для списка слов
-        self.text_box = tk.Text(
-            frame,
-            width=35,
-            height=1,  # Временное значение, будет пересчитано
-            font=FONTS["console"],
-            bg=COLORS["bg"],
-            bd=0,
-            fg=COLORS["text_faint"],
-            padx=5,
-            pady=5,
-            wrap="none"  # Отключаем перенос строк для точного расчёта
+            fg=COLORS["text_main"]
         )
-        self.text_box.pack(padx=10, pady=(0, 10), fill="both", expand=True)
-        self.text_box.config(state="disabled")
+        lbl_title.pack(side="left", padx=10)
 
-    def show(self, x: int, y: int):
+        # Кнопка закрытия
+        btn_close = tk.Label(
+            top_bar,
+            text="✕",
+            font=FONTS.get("close_btn", ("Segoe UI", 11, "bold")),
+            bg=COLORS["bg"],
+            fg=COLORS["close_btn"],
+            cursor="hand2"
+        )
+        btn_close.pack(side="right", padx=10)
+        btn_close.bind("<Button-1>", lambda e: self.close())
+
+    def _create_scrollable_content(self):
+        """Создает прокручиваемую область со списком слов"""
+        scroll_container = tk.Frame(self, bg=COLORS["bg"])
+        scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Canvas для прокрутки
+        self.canvas = tk.Canvas(
+            scroll_container,
+            bg=COLORS["bg"],
+            highlightthickness=0
+        )
+
+        # Кастомный scrollbar
+        self.scrollbar = CustomScrollbar(scroll_container, self.canvas)
+        self.scrollbar.pack(side="right", fill="y")
+
+        # Frame для списка слов
+        self.scrollable_frame = tk.Frame(self.canvas, bg=COLORS["bg"])
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.update)
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # КРИТИЧНО: Используем локальные bindings вместо bind_all
+        # чтобы не конфликтовать с главным окном
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
+        self.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        """Прокрутка колёсиком мыши (локальная для popup)"""
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"  # КРИТИЧНО: Останавливаем всплытие события
+
+    def update_words(self, vocab_level: int):
         """
-        Показывает popup окно с правильной высотой.
+        Обновляет список слов с debounce.
 
         Args:
-            x: X координата для размещения окна
-            y: Y координата для размещения окна
+            vocab_level: Уровень из слайдера (0-100)
         """
-        # Безопасное получение высоты главного окна с fallback на конфиг
-        parent_height = self.parent.winfo_height()
+        # Вычисляем cutoff из vocab_level
+        cutoff = int(vocab_level * 20000 / 100)
 
-        # Fallback: если родитель ещё не отрисован (height == 1)
-        if parent_height <= 1:
-            parent_height = int(cfg.get("USER", "WindowHeight", "700"))
+        # Предотвращаем дублирующие обновления
+        if self._current_cutoff == cutoff:
+            return
 
-        # Устанавливаем геометрию
-        self.geometry(f"{self.WINDOW_WIDTH}x{parent_height}+{x}+{y}")
+        # Отменяем предыдущий таймер
+        if self._update_timer is not None:
+            self.after_cancel(self._update_timer)
 
-        # Форсируем отрисовку для корректного winfo_height()
-        self.update_idletasks()
+        # Создаём новый таймер
+        self._update_timer = self.after(
+            self.DEBOUNCE_DELAY_MS,
+            lambda: self._execute_update(cutoff)
+        )
 
-        # Пересчитываем высоту Text widget
-        visible_lines = self._calculate_visible_lines()
-        self.text_box.config(height=visible_lines)
+    def _execute_update(self, cutoff: int):
+        """
+        Фактическое обновление списка слов.
+
+        Args:
+            cutoff: Граница между ignored и active (rank)
+        """
+        self._current_cutoff = cutoff
+        self._update_timer = None
+
+        # Получаем слова из vocab
+        # Вариант A: 100 слов ДО cutoff (ignored) | separator | 100 слов ПОСЛЕ cutoff (active)
+        ignored, active = get_word_range(
+            cutoff,
+            self.WORDS_BEFORE_CUTOFF,
+            self.WORDS_AFTER_CUTOFF
+        )
+
+        # Рендерим список
+        self._render_word_list(ignored, active)
+
+        # Прокручиваем к разделителю и обновляем scrollbar
+        self.after_idle(self._scroll_to_separator)
+        self.after_idle(lambda: self.after(50, self._force_scrollbar_update))
+
+    def _force_scrollbar_update(self):
+        """Принудительное обновление scrollbar с проверкой готовности"""
+        # Убеждаемся что геометрия полностью готова
+        self.canvas.update_idletasks()
+        self.scrollbar.force_update()
+
+    def _render_word_list(self, ignored: list[tuple[str, int]], active: list[tuple[str, int]]):
+        """
+        Рендерит список слов с разделителем.
+
+        Args:
+            ignored: Список (word, rank) для ignored слов (бледные)
+            active: Список (word, rank) для active слов (яркие)
+        """
+        # Очищаем предыдущий список
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        # Рендерим ignored слова (бледные)
+        for word, rank in ignored:
+            self._create_word_label(word, rank, "#666666")
+
+        # Рендерим разделитель (только если есть оба списка)
+        if ignored and active:
+            self.separator = tk.Frame(
+                self.scrollable_frame,
+                height=2,
+                bg=COLORS["separator"]
+            )
+            self.separator.pack(fill="x", pady=5, padx=10)
+        elif ignored:
+            # Cutoff в конце - разделитель внизу
+            self.separator = tk.Frame(
+                self.scrollable_frame,
+                height=2,
+                bg=COLORS["separator"]
+            )
+            self.separator.pack(fill="x", pady=5, padx=10)
+        elif active:
+            # Cutoff в начале - разделитель вверху
+            self.separator = tk.Frame(
+                self.scrollable_frame,
+                height=2,
+                bg=COLORS["separator"]
+            )
+            self.separator.pack(fill="x", pady=5, padx=10)
+        else:
+            # Пустой список - нет разделителя
+            self.separator = None
+
+        # Рендерим active слова (яркие)
+        for word, rank in active:
+            self._create_word_label(word, rank, "#CCCCCC")
+
+    def _create_word_label(self, word: str, rank: int, color: str):
+        """
+        Создает кликабельный label для слова.
+
+        Формат: "xxxxx   word" с выравниванием числа вправо.
+
+        Args:
+            word: Слово для отображения
+            rank: Ранг слова в словаре (0-based)
+            color: Цвет текста
+        """
+        # Формат: "  453   hello" с выравниванием номера вправо на 5 символов
+        display_text = f"{rank + 1:>5}   {word}"
+
+        lbl = tk.Label(
+            self.scrollable_frame,
+            text=display_text,
+            font=FONTS["definition"],  # Размер как у definitions в главном окне
+            bg=COLORS["bg"],
+            fg=color,
+            cursor="hand2",
+            anchor="w"
+        )
+        lbl.pack(fill="x", padx=10, pady=1)
+
+        # КРИТИЧНО: Используем default argument для захвата значений word и color
+        # Без этого все labels будут использовать последние значения из цикла
+
+        # Клик → поиск слова (САМЫМ ПЕРВЫМ, чтобы не конфликтовать с hover)
+        lbl.bind("<Button-1>", lambda e, w=word: self._on_word_click(w))
+
+        # Hover эффект (ПОСЛЕ клика, чтобы не блокировать его)
+        lbl.bind("<Enter>", lambda e, c=color, label=lbl: self._on_hover_enter(label, c))
+        lbl.bind("<Leave>", lambda e, c=color, label=lbl: self._on_hover_leave(label, c))
+
+    def _on_hover_enter(self, label: tk.Label, original_color: str):
+        """
+        Hover enter эффект.
+
+        Args:
+            label: Label widget
+            original_color: Оригинальный цвет текста (для восстановления)
+        """
+        label.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
+
+    def _on_hover_leave(self, label: tk.Label, original_color: str):
+        """
+        Hover leave эффект.
+
+        Args:
+            label: Label widget
+            original_color: Оригинальный цвет текста для восстановления
+        """
+        label.config(bg=COLORS["bg"], fg=original_color)
+
+    def _on_word_click(self, word: str):
+        """
+        Обработка клика по слову.
+
+        Args:
+            word: Слово для поиска
+        """
+        if self.search_callback:
+            self.search_callback(word)
+
+    def _scroll_to_separator(self):
+        """
+        Прокручивает canvas так, чтобы separator был по центру окна.
+
+        КРИТИЧНО: Вызывается через after_idle после рендеринга,
+        т.к. требуется готовая геометрия всех виджетов.
+        """
+        if not self.separator:
+            return
+
+        # Форсируем обновление геометрии
+        self.canvas.update_idletasks()
+
+        # Получаем позицию separator в scrollable_frame
+        sep_y = self.separator.winfo_y()
+        canvas_height = self.canvas.winfo_height()
+
+        # Получаем полную высоту scrollregion
+        scroll_region = self.canvas.cget("scrollregion")
+        if not scroll_region:
+            return
+
+        total_height = float(scroll_region.split()[3])
+
+        # Вычисляем целевую позицию (separator по центру)
+        target_y = (sep_y - canvas_height / 2) / total_height
+        target_y = max(0.0, min(1.0, target_y))
+
+        # Прокручиваем
+        self.canvas.yview_moveto(target_y)
+
+    def sync_height_with_main(self):
+        """
+        Синхронизирует высоту popup с главным окном.
+
+        Вызывается при открытии popup.
+        """
+        main_height = self.main_window.winfo_height()
+        self.geometry(f"{self.WINDOW_WIDTH}x{main_height}")
+
+    def show_at_position(self, x: int, y: int):
+        """
+        Показывает popup в заданной позиции.
+
+        Args:
+            x: X координата
+            y: Y координата
+        """
+        # Синхронизируем высоту
+        self.sync_height_with_main()
+
+        # Устанавливаем позицию
+        main_height = self.main_window.winfo_height()
+        self.geometry(f"{self.WINDOW_WIDTH}x{main_height}+{x}+{y}")
 
         # Показываем окно
         self.deiconify()
 
-    def _calculate_visible_lines(self) -> int:
-        """
-        Вычисляет максимальное количество строк, помещающихся в окно без скроллинга.
-
-        Returns:
-            Количество строк текста
-
-        Формула:
-            available_height = window_height - header - all_paddings - bottom_margin
-            visible_lines = available_height / line_height
-
-        Учитываются все отступы:
-            - Заголовок с pady
-            - Border frame (highlightthickness=2)
-            - Text widget padx/pady
-            - Нижний margin для предотвращения обрезки
-
-        Ограничения:
-            MIN_VISIBLE_LINES <= result <= MAX_VISIBLE_LINES
-        """
-        window_height = self.winfo_height()
-
-        # Вычисляем доступное пространство для текста
-        # Учитываем все отступы:
-        # - HEADER_HEIGHT: заголовок + его pady(5,2)
-        # - VERTICAL_PADDING: общий запас (border, padx frame и т.д.)
-        # - TEXT_WIDGET_PADDING: внутренние отступы Text (pady=5 * 2)
-        # - BOTTOM_MARGIN: дополнительный запас снизу
-        available_height = (
-                window_height
-                - self.HEADER_HEIGHT
-                - self.VERTICAL_PADDING
-                - (self.TEXT_WIDGET_PADDING * 2)
-                - self.BOTTOM_MARGIN
-        )
-
-        # Количество строк
-        visible_lines = int(available_height / self.LINE_HEIGHT)
-
-        # Применяем ограничения
-        visible_lines = max(self.MIN_VISIBLE_LINES, visible_lines)
-        visible_lines = min(self.MAX_VISIBLE_LINES, visible_lines)
-
-        return visible_lines
-
-    def update_words(self, level: int):
-        """
-        Обновляет список игнорируемых слов на основе уровня слайдера.
-
-        Args:
-            level: Значение слайдера от 0 до 100
-
-        Логика:
-            - level=0:   cutoff=0     → "None (Show All)"
-            - level>0:   Показывает последние N слов перед cutoff с многоточием сверху
-
-        Формат вывода при level > 0:
-            ...
-            1971. macquarie
-            1972. shouting
-            1973. pta
-            ...
-            2000. wilder
-
-        Многоточие в начале указывает, что список игнорируемых слов продолжается выше.
-        """
-        # Динамический расчёт границы на основе размера словаря
-        cutoff_rank = int(level * vocab.VOCAB_SIZE / 100)
-
-        if cutoff_rank == 0:
-            content = "None (Show All)"
-        else:
-            # Вычисляем максимальное количество слов для текущей высоты
-            max_words = self._calculate_visible_lines()
-
-            # Резервируем одну строку для многоточия в начале
-            # (если start > 0, т.е. есть слова выше начала списка)
-            max_words_for_list = max_words - 1
-
-            # Берём последние N слов перед границей
-            start = max(0, cutoff_rank - max_words_for_list)
-            end = cutoff_rank
-
-            # Получаем слайс из глобального отсортированного списка
-            words_slice = vocab.SORTED_WORDS[start:end]
-
-            # Генерируем ранги (нумерация с 1, а не с 0)
-            ranks_slice = range(start + 1, end + 1)
-
-            # Объединяем ранги со словами в прямом порядке
-            zipped = list(zip(ranks_slice, words_slice))
-
-            # Форматируем строки вида "1. the"
-            lines = [f"{r}. {w}" for r, w in zipped]
-
-            # Добавляем многоточие в начало если есть слова выше
-            if start > 0:
-                lines.insert(0, "...")
-
-            content = "\n".join(lines)
-
-        # Обновляем содержимое текстового поля
-        self.text_box.config(state="normal")
-        self.text_box.delete("1.0", "end")
-        self.text_box.insert("1.0", content)
-        self.text_box.config(state="disabled")
+    def close(self):
+        """Закрывает popup (скрывает через withdraw)"""
+        self.withdraw()
