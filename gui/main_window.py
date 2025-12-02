@@ -82,6 +82,10 @@ class MainWindow(tk.Tk):
         self.trans_cache = OrderedDict()  # LRU cache для hover-переводов
         self.hover_timer = None
 
+        # Флаги для умного управления popup слайдера
+        self._slider_was_moved = False  # Отслеживает факт движения ползунка
+        self._popup_was_open_before_click = False  # Запоминает состояние popup ДО клика
+
         # Callbacks устанавливаются из main.pyw
         self.search_callback = None
         self.clipboard_callback = None
@@ -407,10 +411,10 @@ class MainWindow(tk.Tk):
         self.bind("<B1-Motion>", self.do_move)
         self.bind("<ButtonRelease-1>", self.stop_move)
 
-        # Popup слайдера
-        self.scale.bind("<ButtonPress-1>", self.show_popup)
-        self.scale.bind("<B1-Motion>", self.move_popup)
-        self.scale.bind("<ButtonRelease-1>", self.hide_popup_and_save)
+        # Popup слайдера - используем три отдельных обработчика для умного управления
+        self.scale.bind("<ButtonPress-1>", self.on_slider_press)
+        self.scale.bind("<B1-Motion>", self.on_slider_motion)
+        self.scale.bind("<ButtonRelease-1>", self.on_slider_release)
 
     def _sync_initial_state(self):
         """Синхронизация UI с настройками при запуске"""
@@ -713,42 +717,94 @@ class MainWindow(tk.Tk):
     # ===== VOCAB SLIDER =====
 
     def change_level(self, delta: int):
-        """Изменение уровня словаря"""
+        """
+        Изменение уровня словаря через стрелки.
+
+        Обновляет popup если он открыт (но НЕ закрывает его).
+        """
         new_val = self.vocab_var.get() + delta
         if 0 <= new_val <= 100:
             self.vocab_var.set(new_val)
             self.lbl_lvl_val.config(text=str(new_val))
+
+            # Обновляем popup если он открыт (не закрываем)
+            if self.popup and self.popup.winfo_viewable():
+                self.popup.update_words(new_val)
+
             self.save_level()
 
     def save_level(self):
         """Сохранение уровня"""
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
-    def show_popup(self, event):
-        """Показывает popup при клике на слайдер"""
+    def on_slider_press(self, event):
+        """
+        Обработка нажатия на ползунок слайдера.
+
+        Логика:
+        1. Запоминаем был ли popup открыт ДО этого клика
+        2. Открываем popup с анимацией если закрыт
+        3. Обновляем содержимое (т.к. значение слайдера изменилось при клике)
+        """
+        # ПЕРВЫМ ДЕЛОМ: Запоминаем состояние popup ДО любых действий
+        self._popup_was_open_before_click = self.popup and self.popup.winfo_viewable()
+        self._slider_was_moved = False
         self.dragging_allowed = False
 
-        # Позиционируем справа от главного окна
-        x = self.winfo_x() + self.winfo_width() + 10
-        y = self.winfo_y()
+        # Открываем popup с анимацией только если закрыт
+        if not self._popup_was_open_before_click:
+            x = self.winfo_x() + self.winfo_width() + 10
+            y = self.winfo_y()
+            self.popup.show_animated(x, y)  # ИЗМЕНЕНО: используем show_animated
 
-        # Показываем окно с синхронизацией высоты
-        self.popup.show_at_position(x, y)
+        # ВСЕГДА обновляем содержимое popup (значение слайдера изменилось при клике)
+        self.after(10, self._update_popup_if_visible)
 
-        # Обновляем содержимое
-        self.popup.update_words(self.vocab_var.get())
+    def _update_popup_if_visible(self):
+        """
+        Обновляет popup если он открыт.
 
-    def move_popup(self, event):
-        """Обновляет значение и запускает debounced обновление popup"""
-        self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
-
-        # Debounced обновление popup (если открыт)
+        Вызывается через after() для синхронизации с обновлением значения слайдера.
+        Защищён проверкой winfo_viewable() на случай если popup был закрыт
+        до выполнения отложенного вызова.
+        """
         if self.popup and self.popup.winfo_viewable():
             self.popup.update_words(self.vocab_var.get())
 
-    def hide_popup_and_save(self, event):
-        """Сохраняет уровень (popup НЕ закрывается автоматически)"""
+    def on_slider_motion(self, event):
+        """
+        Обработка движения ползунка (drag).
+
+        КРИТИЧНО: Устанавливает флаг что было движение, чтобы отличить
+        простой клик от драга.
+        """
+        self._slider_was_moved = True
+
+        # Обновляем label со значением
+        self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
+
+        # Обновляем popup если открыт (debounced через update_words)
+        if self.popup and self.popup.winfo_viewable():
+            self.popup.update_words(self.vocab_var.get())
+
+    def on_slider_release(self, event):
+        """
+        Обработка отпускания кнопки мыши после взаимодействия со слайдером.
+
+        Логика закрытия popup:
+        - Закрываем с анимацией ТОЛЬКО если popup был открыт ДО клика И не было движения
+        """
+        # Сохраняем уровень всегда
         self.save_level()
+
+        # Закрываем popup с анимацией только если он был открыт ДО клика И не было движения
+        if self._popup_was_open_before_click and not self._slider_was_moved:
+            if self.popup and self.popup.winfo_viewable():
+                self.popup.close_animated()  # ИЗМЕНЕНО: используем close_animated
+
+        # Сбрасываем флаги для следующего взаимодействия
+        self._slider_was_moved = False
+        self._popup_was_open_before_click = False
 
     # ===== WINDOW DRAGGING =====
 
