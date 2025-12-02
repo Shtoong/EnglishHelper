@@ -131,3 +131,43 @@ def is_word_too_simple(word: str, current_level: int) -> tuple[bool, str]:
     cutoff = int(current_level * VOCAB_SIZE / 100)
 
     return rank < cutoff, lemma
+
+
+def get_word_range(cutoff: int, before: int = 500, after: int = 500) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """
+    Возвращает слова до и после cutoff с их рангами.
+
+    Args:
+        cutoff: Граница между ignored и active словами (rank)
+        before: Количество слов ДО cutoff (ignored)
+        after: Количество слов ПОСЛЕ cutoff (active)
+
+    Returns:
+        (ignored_words, active_words)
+        где каждый элемент это tuple (word, rank)
+
+    Examples:
+        cutoff=0:     ignored=[], active=[(word, 0), ..., (word, 499)]
+        cutoff=500:   ignored=[(word, 0), ..., (word, 499)],
+                      active=[(word, 500), ..., (word, 999)]
+        cutoff=10000: ignored=[(word, 9500), ..., (word, 9999)],
+                      active=[(word, 10000), ..., (word, 10499)]
+        cutoff=20000: ignored=[(word, 19500), ..., (word, 19999)],
+                      active=[]
+
+    КРИТИЧНО: Обрабатывает edge cases когда cutoff у границ словаря.
+    """
+    total = len(SORTED_WORDS)
+
+    # Вычисляем диапазоны индексов
+    ignored_start = max(0, cutoff - before)
+    ignored_end = min(cutoff, total)
+
+    active_start = cutoff
+    active_end = min(cutoff + after, total)
+
+    # Извлекаем слова с рангами
+    ignored = [(SORTED_WORDS[i], i) for i in range(ignored_start, ignored_end)]
+    active = [(SORTED_WORDS[i], i) for i in range(active_start, active_end)]
+
+    return ignored, active
