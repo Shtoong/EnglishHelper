@@ -103,13 +103,15 @@ class MainWindow(tk.Tk):
             self.btn_audio_uk
         )
 
+        # ИЗМЕНЕНО: Добавлен параметр self.canvas_scroll для прокрутки
         self.dict_renderer = DictionaryRenderer(
             self.scrollable_frame,
             lambda: self.content_width,
             self._bind_hover_translation,
             self.on_synonym_click,
             self._on_synonym_enter,
-            self._on_synonym_leave
+            self._on_synonym_leave,
+            self.canvas_scroll  # Добавлен параметр для прокрутки
         )
 
         # Финальная настройка
