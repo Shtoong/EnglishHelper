@@ -1,37 +1,7 @@
 import tkinter as tk
 from config import cfg
 from gui.styles import COLORS, FONTS
-
-
-class ResizeGrip(tk.Label):
-    def __init__(self, parent, resize_callback, finish_callback, bg, fg):
-        super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
-        self.resize_callback = resize_callback
-        self.finish_callback = finish_callback
-
-        self.bind("<Button-1>", self._start_resize)
-        self.bind("<B1-Motion>", self._do_resize)
-        self.bind("<ButtonRelease-1>", self._stop_resize)
-
-        self._x = 0
-        self._y = 0
-
-    def _start_resize(self, event):
-        self._x = event.x_root
-        self._y = event.y_root
-        return "break"
-
-    def _do_resize(self, event):
-        dx = event.x_root - self._x
-        dy = event.y_root - self._y
-        self.resize_callback(dx, dy)
-        self._x = event.x_root
-        self._y = event.y_root
-        return "break"
-
-    def _stop_resize(self, event):
-        self.finish_callback()
-        return "break"
+from gui.widgets import ResizeGrip
 
 
 class SentenceWindow(tk.Toplevel):
@@ -62,7 +32,6 @@ class SentenceWindow(tk.Toplevel):
         self.content_frame = tk.Frame(self, bg=COLORS["bg"])
         self.content_frame.pack(fill="both", expand=True)
 
-        # FIXED: было ("Segoe UI", 12)
         self.lbl_eng = tk.Label(
             self.content_frame,
             text="",
@@ -75,7 +44,6 @@ class SentenceWindow(tk.Toplevel):
         )
         self.lbl_eng.pack(fill="x", padx=15, pady=(10, 5))
 
-        # FIXED: было ("Segoe UI", 33)
         self.lbl_rus = tk.Label(
             self.content_frame,
             text="...",
@@ -89,7 +57,13 @@ class SentenceWindow(tk.Toplevel):
         self.lbl_rus.pack(fill="x", padx=15, pady=(5, 10))
 
         # Grip с callback-ом
-        self.grip = ResizeGrip(self, self.resize_window, self.save_geometry, COLORS["bg"], COLORS["resize_grip"])
+        self.grip = ResizeGrip(
+            self,
+            self.resize_window,
+            self.save_geometry,
+            COLORS["bg"],
+            COLORS["resize_grip"]
+        )
         self.grip.place(relx=1.0, rely=1.0, anchor="se")
 
         # Перемещение
