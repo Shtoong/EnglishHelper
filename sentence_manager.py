@@ -41,6 +41,10 @@ class SentenceManager:
         self._translation_lock = threading.Lock()
         self._translation_timer: Optional[threading.Timer] = None
 
+        # КРИТИЧНО: Флаг состояния - было ли предыдущее предложение завершено
+        # Нужен для корректной очистки редактора при следующем символе
+        self._previous_sentence_finished = False
+
     def update_display(self, key_name: str, trigger_translation: bool, sentence_finished: bool):
         """
         Обновляет отображение предложения и запускает перевод при необходимости.
@@ -78,12 +82,14 @@ class SentenceManager:
         """
         key_lower = key_name.lower()
 
-        # Очистка редактора при начале нового предложения
-        if sentence_finished and len(key_name) == 1 and key_name not in [" ", ".", "!", "?", ","]:
-            self.editor.clear()
-
         # Обработка обычных символов
         if len(key_name) == 1:
+            # Очистка редактора при начале нового предложения
+            # Используем СОХРАНЕННЫЙ флаг из предыдущего вызова
+            if self._previous_sentence_finished and key_name not in [" ", ".", "!", "?", ","]:
+                self.editor.clear()
+                self._previous_sentence_finished = False  # Сбрасываем флаг после очистки
+
             self.editor.insert(key_name)
 
         # Обработка специальных клавиш
@@ -91,6 +97,8 @@ class SentenceManager:
             self.editor.insert(" ")
 
         elif key_lower == "enter":
+            # Enter только добавляет перевод строки
+            # Редактор НЕ очищается - очистка произойдет при следующем печатном символе
             self.editor.insert("\n")
 
         elif key_lower == "backspace":
@@ -104,6 +112,12 @@ class SentenceManager:
 
         elif key_lower == "right":
             self.editor.move_right()
+
+        # КРИТИЧНО: Сохраняем состояние завершения предложения для следующего вызова
+        # Если текущая клавиша завершила предложение (Enter или . ! ?) -
+        # запоминаем это, чтобы при СЛЕДУЮЩЕМ печатном символе очистить редактор
+        if sentence_finished:
+            self._previous_sentence_finished = True
 
     def _schedule_translation(self, sentence_finished: bool):
         """
