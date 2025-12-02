@@ -54,40 +54,43 @@ class WordProcessor:
         """
         self.main_window = main_window
 
-    def process_word(self, word: str):
+    def process_word(self, word: str, force: bool = False):
         """
         Обрабатывает слово асинхронно в отдельном потоке.
 
         Args:
             word: Слово для обработки
+            force: Если True, игнорирует фильтр "слишком простых" слов
+                   (используется для кликов из popup)
         """
         threading.Thread(
             target=self._process_word_parallel,
-            args=(word,),
+            args=(word, force),
             daemon=True
         ).start()
 
-    def _process_word_parallel(self, word: str):
+    def _process_word_parallel(self, word: str, force: bool = False):
         """
         Параллельная обработка слова: перевод + изображение + словарь.
 
         Логика:
-        1. Проверка "слишком простое" на основе vocab level
+        1. Проверка "слишком простое" на основе vocab level (если не force)
         2. Сброс UI для нового слова
         3. Быстрая проверка кэша перевода
         4. Параллельные запуски workers
 
         Args:
             word: Исходное слово
+            force: Если True, пропускает фильтр простых слов
         """
         # Получаем текущий уровень словаря
         vocab_level = int(self.main_window.vocab_var.get())
 
-        # Проверяем не слишком ли простое слово
+        # Проверяем не слишком ли простое слово (если не force)
         too_simple, lemmatized = is_word_too_simple(word, vocab_level)
 
-        if too_simple:
-            return  # Игнорируем простые слова
+        if too_simple and not force:
+            return  # Игнорируем простые слова (только если не force)
 
         # Сбрасываем UI для нового слова
         self.main_window.after(0, lambda: self.main_window.reset_ui(lemmatized))
