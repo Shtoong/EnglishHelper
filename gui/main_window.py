@@ -304,11 +304,13 @@ class MainWindow(tk.Tk):
 
     def _create_scrollable_content(self):
         """
-        Прокручиваемая область с определениями.
+        Прокручиваемая область с определениями и кастомным scrollbar.
 
         КРИТИЧНО: Этот метод вызывается ПОСЛЕ _create_vocab_slider() и _create_status_bar(),
         чтобы scrollable content занял только оставшееся пространство между верхними
         элементами и нижним фреймом (который уже запакован с side="bottom").
+
+        Кастомный scrollbar реализован через Canvas для полного контроля над стилями.
         """
         scroll_container = tk.Frame(self, bg=COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
@@ -318,20 +320,38 @@ class MainWindow(tk.Tk):
             bg=COLORS["bg"],
             highlightthickness=0
         )
-        self.scrollbar = tk.Scrollbar(
+
+        # Кастомный scrollbar: Canvas вместо tk.Scrollbar
+        # Даёт полный контроль над внешним видом (цвет, ширина, hover эффект)
+        self.scrollbar_canvas = tk.Canvas(
             scroll_container,
-            orient="vertical",
-            command=self.canvas_scroll.yview
+            width=8,  # Узкий scrollbar (8px)
+            bg=COLORS["bg_secondary"],  # Цвет желоба (тёмный)
+            highlightthickness=0,
+            bd=0
         )
+
+        # Состояние scrollbar
+        self.scrollbar_thumb = None  # ID бегунка на Canvas
+        self.scrollbar_dragging = False  # Флаг перетаскивания
+        self.scrollbar_drag_start_y = 0  # Начальная Y позиция при перетаскивании
+
         self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=COLORS["bg"])
 
         self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
         self.canvas_scroll.bind("<Configure>", self._on_canvas_configure)
 
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas_scroll.configure(yscrollcommand=self._update_scrollbar)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Биндинг событий для кастомного scrollbar
+        self.scrollbar_canvas.bind("<Button-1>", self._on_scrollbar_click)
+        self.scrollbar_canvas.bind("<B1-Motion>", self._on_scrollbar_drag)
+        self.scrollbar_canvas.bind("<ButtonRelease-1>", self._on_scrollbar_release)
+        self.scrollbar_canvas.bind("<Enter>", self._on_scrollbar_enter)
+        self.scrollbar_canvas.bind("<Leave>", self._on_scrollbar_leave)
 
     def _create_vocab_slider(self):
         """
@@ -566,25 +586,137 @@ class MainWindow(tk.Tk):
 
         self.after(0, lambda: self.update_cache_button())
 
+    # ===== КАСТОМНЫЙ SCROLLBAR =====
+
+    def _update_scrollbar(self, first, last):
+        """
+        Обновляет позицию и размер кастомного scrollbar.
+        Вызывается автоматически Canvas при скролле.
+
+        Args:
+            first: Начальная позиция видимой области (0.0 - 1.0)
+            last: Конечная позиция видимой области (0.0 - 1.0)
+        """
+        first = float(first)
+        last = float(last)
+
+        # Удаляем старый бегунок
+        if self.scrollbar_thumb:
+            self.scrollbar_canvas.delete(self.scrollbar_thumb)
+
+        # Если весь контент виден - скрываем scrollbar
+        if first <= 0.0 and last >= 1.0:
+            self.scrollbar_canvas.pack_forget()
+            return
+
+        # Показываем scrollbar
+        if not self.scrollbar_canvas.winfo_ismapped():
+            self.scrollbar_canvas.pack(side="right", fill="y")
+
+        # Рассчитываем размер и позицию бегунка
+        canvas_height = self.scrollbar_canvas.winfo_height()
+        thumb_height = max(20, int(canvas_height * (last - first)))  # Минимум 20px
+        thumb_y = int(canvas_height * first)
+
+        # Рисуем бегунок (слегка серый, узкий с отступами)
+        self.scrollbar_thumb = self.scrollbar_canvas.create_rectangle(
+            2, thumb_y,  # x1, y1
+            6, thumb_y + thumb_height,  # x2, y2 (ширина 4px с отступами по 2px)
+            fill=COLORS["text_faint"],  # Серый цвет
+            outline="",  # Без обводки
+            tags="thumb"
+        )
+
+    def _on_scrollbar_click(self, event):
+        """
+        Обработка клика по scrollbar.
+        - Клик по бегунку: начало перетаскивания
+        - Клик по желобу: прыжок к позиции
+        """
+        # Проверяем клик по бегунку
+        item = self.scrollbar_canvas.find_closest(event.x, event.y)
+        if item and "thumb" in self.scrollbar_canvas.gettags(item[0]):
+            self.scrollbar_dragging = True
+            self.scrollbar_drag_start_y = event.y
+        else:
+            # Клик по желобу - прыжок к позиции
+            canvas_height = self.scrollbar_canvas.winfo_height()
+            fraction = event.y / canvas_height
+            self.canvas_scroll.yview_moveto(fraction)
+
+    def _on_scrollbar_drag(self, event):
+        """Обработка перетаскивания бегунка мышью"""
+        if not self.scrollbar_dragging:
+            return
+
+        # Вычисляем дельту и скроллим
+        delta_y = event.y - self.scrollbar_drag_start_y
+        canvas_height = self.scrollbar_canvas.winfo_height()
+
+        # Получаем текущую позицию скролла
+        current_pos = self.canvas_scroll.yview()[0]
+
+        # Вычисляем новую позицию
+        scroll_fraction = delta_y / canvas_height
+        new_pos = current_pos + scroll_fraction
+
+        # Применяем скролл
+        self.canvas_scroll.yview_moveto(new_pos)
+        self.scrollbar_drag_start_y = event.y
+
+    def _on_scrollbar_release(self, event):
+        """Завершение перетаскивания бегунка"""
+        self.scrollbar_dragging = False
+
+    def _on_scrollbar_enter(self, event):
+        """Hover эффект: бегунок становится чуть светлее"""
+        if self.scrollbar_thumb:
+            self.scrollbar_canvas.itemconfig(
+                self.scrollbar_thumb,
+                fill=COLORS["text_main"]  # Светлее при hover
+            )
+
+    def _on_scrollbar_leave(self, event):
+        """Возврат к обычному цвету при уходе курсора"""
+        if self.scrollbar_thumb:
+            self.scrollbar_canvas.itemconfig(
+                self.scrollbar_thumb,
+                fill=COLORS["text_faint"]  # Обратно к серому
+            )
+
+    def _force_scrollbar_update(self):
+        """
+        Принудительное обновление scrollbar после отрисовки контента.
+
+        Вызывается через after_idle() чтобы гарантировать что:
+        1. Все виджеты отрисованы
+        2. Canvas пересчитал scrollregion
+        3. Геометрия всех элементов известна
+
+        Это предотвращает мелькание scrollbar во время загрузки слова.
+        """
+        # Обновляем scrollregion
+        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
+
+        # Получаем текущие границы видимой области
+        first, last = self.canvas_scroll.yview()
+
+        # Вызываем обновление scrollbar
+        self._update_scrollbar(first, last)
+
     # ===== SCROLLBAR LOGIC =====
 
     def _on_mousewheel(self, event):
+        """Прокрутка колёсиком мыши"""
         self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_frame_configure(self, event):
+        """Обновление scrollregion при изменении размера scrollable_frame"""
         self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
-        self._check_scroll_needed()
 
     def _on_canvas_configure(self, event):
-        self._check_scroll_needed()
-
-    def _check_scroll_needed(self):
-        """Показывает/скрывает scrollbar при необходимости"""
-        bbox = self.canvas_scroll.bbox("all")
-        if bbox and bbox[3] > self.canvas_scroll.winfo_height():
-            self.scrollbar.pack(side="right", fill="y")
-        else:
-            self.scrollbar.pack_forget()
+        """Обработка изменения размера canvas_scroll"""
+        pass
 
     # ===== TOOLTIP LOGIC =====
 
@@ -649,7 +781,12 @@ class MainWindow(tk.Tk):
     # ===== DATA DISPLAY =====
 
     def update_full_data_ui(self, full_data: Optional[Dict]):
-        """Обновление UI полными данными словаря"""
+        """
+        Обновление UI полными данными словаря.
+
+        После отрисовки всех элементов принудительно обновляет scrollbar,
+        чтобы он появлялся только когда контент полностью загружен.
+        """
         # Очистка
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
@@ -667,6 +804,9 @@ class MainWindow(tk.Tk):
             # Скрываем кнопки аудио
             self.btn_audio_us.config(fg=COLORS["text_faint"])
             self.btn_audio_uk.config(fg=COLORS["text_faint"])
+
+            # Форсируем обновление scrollbar после отрисовки
+            self.after_idle(self._force_scrollbar_update)
             return
 
         # Обработка фонетики и аудио
@@ -674,6 +814,9 @@ class MainWindow(tk.Tk):
 
         # Отображение meanings
         self._render_meanings(full_data.get("meanings", []))
+
+        # Форсируем обновление scrollbar после отрисовки всего контента
+        self.after_idle(self._force_scrollbar_update)
 
     def _process_phonetics(self, phonetics: List[Dict]):
         """Обработка фонетической информации"""
@@ -968,6 +1111,10 @@ class MainWindow(tk.Tk):
 
         self.lbl_rus.config(wraplength=self.winfo_width() - 20)
         self.update_cache_button()
+
+        # Сброс позиции скролла в начало
+        # Гарантирует что новое слово всегда показывается с верхней позиции
+        self.canvas_scroll.yview_moveto(0)
 
     # ===== WINDOW CONTROLS =====
 
