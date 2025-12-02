@@ -1,24 +1,52 @@
+"""
+Главное окно приложения EnglishHelper.
+
+Отображает:
+- Заголовок слова с фонетикой и аудио кнопками
+- Перевод на русский
+- Изображение ассоциации
+- Прокручиваемый список определений и примеров
+- Слайдер уровня словаря с popup превью
+- Статус бар с кнопками управления
+
+Architecture:
+- Координирует работу компонентов (AudioManager, DictRenderer)
+- Управляет layout и window state
+- Обрабатывает callbacks из main.pyw
+"""
+
 import tkinter as tk
 from PIL import Image, ImageTk
 import keyboard
-import sys
-import os
 import threading
 import time
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Callable
+from collections import OrderedDict
 
-from playsound import playsound
-
-from config import cfg, AUDIO_DIR
+from config import cfg, get_cache_size_mb, clear_cache
 from gui.styles import COLORS, FONTS
 from gui.components import ResizeGrip, TranslationTooltip
 from gui.scrollbar import CustomScrollbar
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
-from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
+from gui.buttons import ToggleButton, ActionButton
+from gui.audio_manager import AudioManager
+from gui.dict_renderer import DictionaryRenderer
+from network import fetch_sentence_translation
 
 
 class MainWindow(tk.Tk):
+    """
+    Главное окно приложения.
+
+    Responsibilities:
+    - Window management (создание, перемещение, resize, закрытие)
+    - Layout и UI creation
+    - Координация компонентов (audio, dict renderer, tooltip, etc)
+    - Обработка callbacks из main.pyw
+    - Vocab slider и popup управление
+    """
+
     # ===== LAYOUT КОНСТАНТЫ =====
     IMAGE_MAX_HEIGHT = 250
     IMAGE_PADDING = 40
@@ -28,8 +56,8 @@ class MainWindow(tk.Tk):
     MIN_WINDOW_HEIGHT = 400
 
     # ===== UI ПОВЕДЕНИЕ =====
-    MAX_SYNONYMS = 5
     HOVER_DELAY_MS = 300
+    MAX_TRANS_CACHE_SIZE = 500  # LRU limit для предотвращения memory leak
 
     def __init__(self):
         super().__init__()
@@ -48,21 +76,43 @@ class MainWindow(tk.Tk):
         # Установка минимального размера окна
         self.minsize(self.MIN_WINDOW_WIDTH, self.MIN_WINDOW_HEIGHT)
 
-        # Состояние
+        # ===== СОСТОЯНИЕ =====
         self.sources = {"trans": "wait", "img": "wait"}
         self.dragging_allowed = False
         self.popup = None
-        self.current_audio_urls = [None, None]
-        self.trans_cache = {}
+        self.trans_cache = OrderedDict()  # LRU cache для hover-переводов
         self.hover_timer = None
-        self.search_callback = None
-        self._cache_update_scheduled = False
 
-        # Создание виджетов
+        # Callbacks устанавливаются из main.pyw
+        self.search_callback = None
+        self.clipboard_callback = None
+
+        # ===== СОЗДАНИЕ КОМПОНЕНТОВ =====
+        # Эти компоненты создаются ДО _init_ui т.к. нужны для инициализации менеджеров
         self.sent_window = SentenceWindow(self)
         self.tooltip = TranslationTooltip(self)
 
+        # Инициализация UI (создаёт все виджеты)
         self._init_ui()
+
+        # ===== СОЗДАНИЕ МЕНЕДЖЕРОВ =====
+        # Создаются ПОСЛЕ _init_ui т.к. требуют ссылки на виджеты
+        self.audio_manager = AudioManager(
+            self.lbl_phonetic,
+            self.btn_audio_us,
+            self.btn_audio_uk
+        )
+
+        self.dict_renderer = DictionaryRenderer(
+            self.scrollable_frame,
+            lambda: self.content_width,
+            self._bind_hover_translation,
+            self.on_synonym_click,
+            self._on_synonym_enter,
+            self._on_synonym_leave
+        )
+
+        # Финальная настройка
         self._bind_events()
         self._sync_initial_state()
         self.update_cache_button()
@@ -90,11 +140,10 @@ class MainWindow(tk.Tk):
         self._create_separator()
 
         # КРИТИЧНО: Создаём bottom_frame ДО scrollable_content
-        # Это гарантирует что слайдер всегда остаётся внизу
         self._create_vocab_slider()
         self._create_status_bar()
 
-        # Scrollable content создаётся ПОСЛЕДНИМ и заполняет оставшееся место
+        # Scrollable content создаётся ПОСЛЕДНИМ
         self._create_scrollable_content()
 
     def _create_label(self, parent, text: str = "", font_key: str = "definition",
@@ -170,7 +219,7 @@ class MainWindow(tk.Tk):
             pady=2
         )
         btn.pack(side="left", padx=2)
-        btn.bind("<Button-1>", lambda e: self.play_audio(index))
+        btn.bind("<Button-1>", lambda e: self.audio_manager.play_audio(index))
         return btn
 
     def _create_translation_display(self):
@@ -210,7 +259,7 @@ class MainWindow(tk.Tk):
             highlightthickness=0
         )
 
-        # Кастомный scrollbar через отдельный класс
+        # Кастомный scrollbar
         self.scrollbar = CustomScrollbar(scroll_container, self.canvas_scroll)
 
         self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=COLORS["bg"])
@@ -321,111 +370,30 @@ class MainWindow(tk.Tk):
         )
         self.lbl_status.pack(side="right", padx=5)
 
-        # Кнопки-переключатели
-        self.btn_toggle_sent = self._create_toggle_button(
+        # Кнопки-переключатели (используем новый ToggleButton класс)
+        self.btn_toggle_sent = ToggleButton(
             status_bar,
             "Sentence",
-            self.toggle_sentence_window,
-            "ShowSentenceWindow"
+            "ShowSentenceWindow",
+            self.toggle_sentence_window
         )
         self.btn_toggle_sent.pack(side="left", padx=(10, 5))
 
-        self.btn_toggle_pronounce = self._create_toggle_button(
+        self.btn_toggle_pronounce = ToggleButton(
             status_bar,
             "Pronunciation",
-            self.toggle_auto_pronounce,
-            "AutoPronounce"
+            "AutoPronounce",
+            self.toggle_auto_pronounce
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-        # Кнопка очистки кэша (action, не toggle)
-        self.btn_cache = self._create_action_button(
+        # Кнопка очистки кэша (используем новый ActionButton класс)
+        self.btn_cache = ActionButton(
             status_bar,
             "Cache --",
             self.clear_cache
         )
         self.btn_cache.pack(side="left", padx=(0, 10))
-
-    def _create_toggle_button(self, parent, text: str, command: Callable,
-                              config_key: str) -> tk.Label:
-        """
-        Создает кнопку-переключатель с двумя состояниями (on/off).
-
-        Args:
-            parent: Родительский виджет
-            text: Текст кнопки
-            command: Callback для переключения
-            config_key: Ключ в config для хранения состояния
-        """
-        btn = tk.Label(
-            parent,
-            text=text,
-            font=("Segoe UI", 8),
-            bg=COLORS["bg_secondary"],
-            fg=COLORS["text_main"],
-            cursor="hand2",
-            padx=8,
-            pady=3,
-            relief="flat"
-        )
-        btn.bind("<Button-1>", command)
-
-        # Hover эффект
-        def on_enter(e):
-            btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
-
-        def on_leave(e):
-            self._update_toggle_button_style(btn, config_key)
-
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
-
-        # Установить начальный стиль
-        self._update_toggle_button_style(btn, config_key)
-
-        return btn
-
-    def _create_action_button(self, parent, text: str, command: Callable) -> tk.Label:
-        """
-        Создает кнопку для однократных действий (без состояния on/off).
-
-        Args:
-            parent: Родительский виджет
-            text: Текст кнопки
-            command: Callback для действия
-        """
-        btn = tk.Label(
-            parent,
-            text=text,
-            font=("Segoe UI", 8),
-            bg=COLORS["bg_secondary"],
-            fg=COLORS["text_main"],
-            cursor="hand2",
-            padx=8,
-            pady=3,
-            relief="flat"
-        )
-        btn.bind("<Button-1>", command)
-
-        # Hover эффект (простой, без состояния)
-        def on_enter(e):
-            btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
-
-        def on_leave(e):
-            btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
-
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
-
-        return btn
-
-    def _update_toggle_button_style(self, button: tk.Label, config_key: str):
-        """Обновляет стиль кнопки-переключателя на основе состояния в config"""
-        is_enabled = cfg.get_bool("USER", config_key, True)
-        button.config(
-            bg=COLORS["text_accent"] if is_enabled else COLORS["bg_secondary"],
-            fg=COLORS["bg"] if is_enabled else COLORS["text_faint"]
-        )
 
     def _bind_events(self):
         """Привязка событий"""
@@ -450,9 +418,6 @@ class MainWindow(tk.Tk):
 
     def update_cache_button(self):
         """Запускает параллельный подсчет размера кэша"""
-        if self._cache_update_scheduled:
-            return
-        self._cache_update_scheduled = True
         threading.Thread(
             target=self._worker_update_cache_size,
             daemon=True
@@ -460,7 +425,6 @@ class MainWindow(tk.Tk):
 
     def _worker_update_cache_size(self):
         """Worker для подсчета размера кэша"""
-        from config import get_cache_size_mb
         size_mb = get_cache_size_mb()
 
         if size_mb >= 1000:
@@ -469,7 +433,6 @@ class MainWindow(tk.Tk):
             text = f"Cache {size_mb:.1f}M"
 
         self.after(0, lambda: self.btn_cache.config(text=text))
-        self._cache_update_scheduled = False
 
     def clear_cache(self, event=None):
         """Очищает кэш и обновляет кнопку"""
@@ -482,7 +445,6 @@ class MainWindow(tk.Tk):
 
     def _worker_clear_cache(self):
         """Worker для удаления файлов кэша"""
-        from config import clear_cache
         deleted_count = clear_cache()
 
         self.after(0, lambda: self.btn_cache.config(text=f"Cleared ({deleted_count})"))
@@ -540,6 +502,10 @@ class MainWindow(tk.Tk):
         """Worker для загрузки перевода"""
         trans = fetch_sentence_translation(text)
         if trans:
+            # LRU cache: удаляем самый старый элемент при переполнении
+            if len(self.trans_cache) >= self.MAX_TRANS_CACHE_SIZE:
+                self.trans_cache.popitem(last=False)
+
             self.trans_cache[text] = trans
             self.after(0, lambda: self.tooltip.update_text(trans))
 
@@ -566,213 +532,26 @@ class MainWindow(tk.Tk):
         """
         Обновление UI полными данными словаря.
 
-        После отрисовки всех элементов принудительно обновляет scrollbar,
-        чтобы он появлялся только когда контент полностью загружен.
+        Делегирует рендеринг DictRenderer и управляет состоянием audio/phonetics.
+        После отрисовки принудительно обновляет scrollbar.
         """
-        # Очистка
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-        self.current_audio_urls = [None, None]
+        # Очистка аудио состояния
+        self.audio_manager.clear_audio_urls()
 
-        # Рендеринг
+        # Рендеринг через DictRenderer
         if not full_data or not full_data.get("meanings"):
-            self._show_no_dictionary_data()
+            # Placeholder + очистка phonetics
+            self.dict_renderer.render(None)
+            self.audio_manager.process_phonetics([])
         else:
-            self._process_phonetics(full_data.get("phonetics", []))
-            self._render_meanings(full_data.get("meanings", []))
+            # Обработка phonetics
+            self.audio_manager.process_phonetics(full_data.get("phonetics", []))
+
+            # Рендеринг meanings
+            self.dict_renderer.render(full_data)
 
         # КРИТИЧНО: Показываем scrollbar ТОЛЬКО после полной загрузки данных
-        # force_update() автоматически разблокирует обновления
         self.after_idle(self.scrollbar.force_update)
-
-    def _show_no_dictionary_data(self):
-        """Отображает placeholder когда нет данных словаря"""
-        self._create_label(
-            self.scrollable_frame,
-            text="No detailed data available",
-            fg_key="text_faint"
-        ).pack(pady=10)
-
-        self.lbl_phonetic.config(text="")
-        self.btn_audio_us.config(fg=COLORS["text_faint"])
-        self.btn_audio_uk.config(fg=COLORS["text_faint"])
-
-    def _process_phonetics(self, phonetics: List[Dict]):
-        """Обработка фонетической информации"""
-        if not phonetics:
-            self.lbl_phonetic.config(text="")
-            self.btn_audio_us.config(fg=COLORS["text_faint"])
-            self.btn_audio_uk.config(fg=COLORS["text_faint"])
-            return
-
-        # Извлекаем текст фонетики
-        p_text = next((p["text"] for p in phonetics if p.get("text")), "")
-        self.lbl_phonetic.config(text=p_text)
-
-        # Извлекаем URL аудио
-        us_url, uk_url = self._extract_audio_urls(phonetics)
-        self.current_audio_urls = [us_url, uk_url]
-
-        # Обновляем состояние кнопок
-        self.btn_audio_us.config(
-            fg=COLORS["text_main"] if us_url else COLORS["text_faint"]
-        )
-        self.btn_audio_uk.config(
-            fg=COLORS["text_main"] if uk_url else COLORS["text_faint"]
-        )
-
-    def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
-        """Извлекает US и UK аудио URL с приоритетом"""
-        us = next(
-            (p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")),
-            None)
-        uk = next(
-            (p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")),
-            None)
-
-        if not us or not uk:
-            available = [p["audio"] for p in phonetics if p.get("audio")]
-            us = us or (available[0] if len(available) > 0 else None)
-            uk = uk or (available[1] if len(available) > 1 else None)
-
-        return us, uk
-
-    def _render_meanings(self, meanings: List[Dict]):
-        """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
-        for meaning in meanings:
-            # Часть речи
-            pos = meaning.get("partOfSpeech", "")
-            self._create_label(
-                self.scrollable_frame,
-                text=pos,
-                font_key="pos",
-                fg_key="text_pos",
-                anchor="w"
-            ).pack(fill="x", pady=(10, 5))
-
-            # Определения и примеры
-            self._render_definitions(meaning.get("definitions", []))
-
-            # Синонимы
-            self._render_synonyms(meaning.get("synonyms", []))
-
-            # Разделитель
-            tk.Frame(
-                self.scrollable_frame,
-                height=1,
-                bg=COLORS["separator"],
-                width=360
-            ).pack(pady=5)
-
-    def _render_definitions(self, definitions: List[Dict]):
-        """Отрисовка определений и примеров"""
-        for i, defn in enumerate(definitions, 1):
-            # Определение
-            def_text = f"{i}. {defn.get('definition', '')}"
-            lbl_def = self._create_label(
-                self.scrollable_frame,
-                text=def_text,
-                wraplength=self.content_width,
-                justify="left",
-                anchor="w"
-            )
-            lbl_def.pack(fill="x", padx=10, pady=2)
-            self._bind_hover_translation(lbl_def, defn.get('definition', ''))
-
-            # Пример
-            if defn.get("example"):
-                ex_text = f'   "{defn["example"]}"'
-                lbl_ex = self._create_label(
-                    self.scrollable_frame,
-                    text=ex_text,
-                    font_key="example",
-                    fg_key="text_accent",
-                    wraplength=self.content_width,
-                    justify="left",
-                    anchor="w"
-                )
-                lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
-                self._bind_hover_translation(lbl_ex, defn.get("example", ""))
-
-    def _render_synonyms(self, synonyms: List[str]):
-        """Отрисовка синонимов в виде тегов"""
-        if not synonyms:
-            return
-
-        syn_frame = tk.Frame(self.scrollable_frame, bg=COLORS["bg"])
-        syn_frame.pack(fill="x", padx=10, pady=(5, 10))
-
-        tk.Label(
-            syn_frame,
-            text="Syn:",
-            font=FONTS["synonym_label"],
-            bg=COLORS["bg"],
-            fg=COLORS["text_faint"]
-        ).pack(side="left", anchor="n")
-
-        for syn in synonyms[:self.MAX_SYNONYMS]:
-            tag = tk.Label(
-                syn_frame,
-                text=syn,
-                font=FONTS["synonym"],
-                bg=COLORS["bg_secondary"],
-                fg=COLORS["text_main"],
-                padx=6,
-                pady=2,
-                cursor="hand2"
-            )
-            tag.pack(side="left", padx=3)
-
-            tag.bind(
-                "<Enter>",
-                lambda e, t=syn, w=tag: self._on_synonym_enter(e, t, w)
-            )
-            tag.bind(
-                "<Leave>",
-                lambda e, w=tag: self._on_synonym_leave(e, w)
-            )
-            tag.bind(
-                "<Button-1>",
-                lambda e, w=syn: self.on_synonym_click(w)
-            )
-
-    # ===== AUDIO PLAYER =====
-
-    def play_audio(self, index: int):
-        """Воспроизведение аудио по индексу (0=US, 1=UK)"""
-        if index < len(self.current_audio_urls):
-            url = self.current_audio_urls[index]
-            if not url:
-                return
-            threading.Thread(
-                target=self._play_audio_worker,
-                args=(url,),
-                daemon=True
-            ).start()
-
-    def _play_audio_worker(self, url: str):
-        """Worker для загрузки и воспроизведения аудио (для кнопок US/UK)"""
-        try:
-            if "translate.google.com" in url:
-                from urllib.parse import parse_qs, urlparse
-                parsed = urlparse(url)
-                params = parse_qs(parsed.query)
-                word = params.get('q', [''])[0]
-                accent = "us" if "en-US" in url else "uk"
-                cache_path = get_audio_cache_path(word, accent)
-            else:
-                filename = url.split("/")[-1] or f"audio_{abs(hash(url))}.mp3"
-                if not filename.endswith(".mp3"):
-                    filename += ".mp3"
-                cache_path = os.path.join(AUDIO_DIR, filename)
-
-            if not os.path.exists(cache_path):
-                download_and_cache_audio(url, cache_path)
-
-            if os.path.exists(cache_path):
-                playsound(cache_path)
-        except Exception:
-            pass
 
     # ===== IMAGE HANDLER =====
 
@@ -855,11 +634,9 @@ class MainWindow(tk.Tk):
         Немедленно блокирует scrollbar чтобы он не появлялся во время загрузки.
         """
         # ПЕРВЫМ ДЕЛОМ: Блокируем scrollbar и скрываем его
-        # Это предотвращает его появление во время загрузки данных
         self.scrollbar.block_updates()
 
         self.lbl_word.config(text=word)
-        self.lbl_phonetic.config(text="")
         self.lbl_rus.config(
             text="Loading...",
             fg=COLORS["text_accent"]
@@ -869,11 +646,11 @@ class MainWindow(tk.Tk):
             text="",
             bg=COLORS["bg"]
         )
-        self.current_audio_urls = [None, None]
 
-        # Очистка контента
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
+        # Очистка через менеджеры
+        self.audio_manager.clear_audio_urls()
+        self.audio_manager.process_phonetics([])  # Очистка phonetics UI
+        self.dict_renderer.clear()
 
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
@@ -914,14 +691,17 @@ class MainWindow(tk.Tk):
         else:
             self.sent_window.withdraw()
 
-        self._update_toggle_button_style(self.btn_toggle_sent, "ShowSentenceWindow")
+        # Синхронизация визуального состояния кнопки
+        self.btn_toggle_sent.sync_state()
 
     def toggle_auto_pronounce(self, event=None):
         """Переключение автопроизношения"""
         current = cfg.get_bool("USER", "AutoPronounce", True)
         new_state = not current
         cfg.set("USER", "AutoPronounce", new_state)
-        self._update_toggle_button_style(self.btn_toggle_pronounce, "AutoPronounce")
+
+        # Синхронизация визуального состояния кнопки
+        self.btn_toggle_pronounce.sync_state()
 
     # ===== VOCAB SLIDER =====
 
@@ -1007,4 +787,3 @@ class MainWindow(tk.Tk):
         """Закрытие приложения"""
         keyboard.unhook_all()
         self.destroy()
-        sys.exit(0)
