@@ -105,8 +105,9 @@ class VocabPopup(tk.Toplevel):
             highlightthickness=0
         )
 
-        # Кастомный scrollbar
-        self.scrollbar = CustomScrollbar(scroll_container, self.canvas)
+        # Кастомный scrollbar с always_visible=True
+        # ИЗМЕНЕНО: Добавлен параметр always_visible=True для постоянной видимости
+        self.scrollbar = CustomScrollbar(scroll_container, self.canvas, always_visible=True)
         self.scrollbar.pack(side="right", fill="y")
 
         # Frame для списка слов
