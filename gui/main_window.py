@@ -410,7 +410,8 @@ class MainWindow(tk.Tk):
     def _sync_initial_state(self):
         """Синхронизация UI с настройками при запуске"""
         if cfg.get_bool("USER", "ShowSentenceWindow", True):
-            self.sent_window.deiconify()
+            # Показываем С АНИМАЦИЕЙ даже при запуске
+            self.after(100, self.sent_window.show_animated)
         else:
             self.sent_window.withdraw()
 
@@ -681,18 +682,24 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "WindowHeight", self.winfo_height())
 
     def toggle_sentence_window(self, event=None):
-        """Переключение окна предложений"""
+        """
+        Переключение окна предложений с анимацией.
+
+        При включении: fade-in анимация
+        При выключении: fade-out анимация через close_window()
+        """
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
-        cfg.set("USER", "ShowSentenceWindow", new_state)
 
         if new_state:
-            self.sent_window.deiconify()
+            # Показываем окно С АНИМАЦИЕЙ
+            cfg.set("USER", "ShowSentenceWindow", True)
+            self.sent_window.show_animated()
+            self.btn_toggle_sent.sync_state()
         else:
-            self.sent_window.withdraw()
-
-        # Синхронизация визуального состояния кнопки
-        self.btn_toggle_sent.sync_state()
+            # Скрываем окно С АНИМАЦИЕЙ через close_window()
+            # (close_window сам обновит конфиг и синхронизирует кнопку)
+            self.sent_window.close_window()
 
     def toggle_auto_pronounce(self, event=None):
         """Переключение автопроизношения"""
