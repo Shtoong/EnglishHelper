@@ -4,7 +4,6 @@ import keyboard
 import sys
 import os
 import threading
-import requests
 import time
 from typing import Dict, List, Optional, Tuple, Callable
 
@@ -12,133 +11,25 @@ from playsound import playsound
 
 from config import cfg, AUDIO_DIR
 from gui.styles import COLORS, FONTS
+from gui.components import ResizeGrip, TranslationTooltip
+from gui.scrollbar import CustomScrollbar
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
 from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
 
 
-class ResizeGrip(tk.Label):
-    """Виджет для изменения размера окна"""
-
-    def __init__(self, parent, resize_callback, finish_callback, bg, fg):
-        super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
-        self.resize_callback = resize_callback
-        self.finish_callback = finish_callback
-        self.bind("<Button-1>", self._start_resize)
-        self.bind("<B1-Motion>", self._do_resize)
-        self.bind("<ButtonRelease-1>", self._stop_resize)
-        self._x = 0
-        self._y = 0
-
-    def _start_resize(self, event):
-        """Запоминаем начальную позицию в экранных координатах"""
-        self._x = event.x_root
-        self._y = event.y_root
-        return "break"
-
-    def _do_resize(self, event):
-        """Изменяем размер на основе дельты в экранных координатах"""
-        dx = event.x_root - self._x
-        dy = event.y_root - self._y
-        self.resize_callback(dx, dy)
-        self._x = event.x_root
-        self._y = event.y_root
-        return "break"
-
-    def _stop_resize(self, event):
-        """Завершаем изменение размера и сохраняем"""
-        self.finish_callback()
-        return "break"
-
-
-class TranslationTooltip:
-    """Всплывающая подсказка с переводом"""
-
-    def __init__(self, parent):
-        self.parent = parent
-        self.tip_window = None
-        self.label = None
-        self.animation_id = None
-        self.spinner_chars = ["|", "/", "-", "\\"]
-
-    def _create_window(self, x, y):
-        if self.tip_window:
-            return
-
-        x += 15
-        y += 15
-
-        self.tip_window = tk.Toplevel(self.parent)
-        self.tip_window.wm_overrideredirect(True)
-        self.tip_window.wm_geometry(f"+{x}+{y}")
-        self.tip_window.wm_attributes("-topmost", True)
-
-        frame = tk.Frame(
-            self.tip_window,
-            bg=COLORS["bg_secondary"],
-            highlightbackground=COLORS["text_accent"],
-            highlightthickness=1
-        )
-        frame.pack()
-
-        self.label = tk.Label(
-            frame,
-            text="",
-            justify='left',
-            bg=COLORS["bg_secondary"],
-            fg=COLORS["text_main"],
-            font=FONTS["tooltip"],
-            wraplength=300,
-            padx=8,
-            pady=4
-        )
-        self.label.pack()
-
-    def show_loading(self, x, y):
-        self.hide()
-        self._create_window(x, y)
-        self._animate(0)
-
-    def show_text(self, text, x, y):
-        self.hide()
-        self._create_window(x, y)
-        self.label.config(text=text)
-
-    def update_text(self, text):
-        if self.tip_window and self.label:
-            self._stop_animation()
-            self.label.config(text=text)
-
-    def _animate(self, step):
-        if not self.tip_window:
-            return
-        char = self.spinner_chars[step % len(self.spinner_chars)]
-        self.label.config(text=f"{char} Translating...")
-        self.animation_id = self.parent.after(100, lambda: self._animate(step + 1))
-
-    def _stop_animation(self):
-        if self.animation_id:
-            self.parent.after_cancel(self.animation_id)
-            self.animation_id = None
-
-    def hide(self):
-        self._stop_animation()
-        if self.tip_window:
-            self.tip_window.destroy()
-            self.tip_window = None
-            self.label = None
-
-
 class MainWindow(tk.Tk):
-    # ===== UI КОНСТАНТЫ =====
+    # ===== LAYOUT КОНСТАНТЫ =====
     IMAGE_MAX_HEIGHT = 250
     IMAGE_PADDING = 40
     CONTENT_PADDING = 60
     DEFAULT_WRAPLENGTH = 380
-    MAX_SYNONYMS = 5
-    HOVER_DELAY_MS = 300
     MIN_WINDOW_WIDTH = 300
     MIN_WINDOW_HEIGHT = 400
+
+    # ===== UI ПОВЕДЕНИЕ =====
+    MAX_SYNONYMS = 5
+    HOVER_DELAY_MS = 300
 
     def __init__(self):
         super().__init__()
@@ -198,7 +89,7 @@ class MainWindow(tk.Tk):
         self._create_image_container()
         self._create_separator()
 
-        # ИСПРАВЛЕНИЕ: Создаём bottom_frame ДО scrollable_content
+        # КРИТИЧНО: Создаём bottom_frame ДО scrollable_content
         # Это гарантирует что слайдер всегда остаётся внизу
         self._create_vocab_slider()
         self._create_status_bar()
@@ -216,6 +107,15 @@ class MainWindow(tk.Tk):
         }
         defaults.update(kwargs)
         return tk.Label(parent, text=text, **defaults)
+
+    def _create_separator(self, width: int = 360) -> None:
+        """Создаёт горизонтальный разделитель"""
+        tk.Frame(
+            self,
+            height=1,
+            bg=COLORS["separator"],
+            width=width
+        ).pack(pady=5)
 
     def _create_top_bar(self):
         """Верхняя панель с кнопкой закрытия"""
@@ -293,15 +193,6 @@ class MainWindow(tk.Tk):
         )
         self.img_container.pack(pady=5)
 
-    def _create_separator(self):
-        """Горизонтальный разделитель"""
-        tk.Frame(
-            self,
-            height=1,
-            bg=COLORS["separator"],
-            width=360
-        ).pack(pady=5)
-
     def _create_scrollable_content(self):
         """
         Прокручиваемая область с определениями и кастомным scrollbar.
@@ -309,8 +200,6 @@ class MainWindow(tk.Tk):
         КРИТИЧНО: Этот метод вызывается ПОСЛЕ _create_vocab_slider() и _create_status_bar(),
         чтобы scrollable content занял только оставшееся пространство между верхними
         элементами и нижним фреймом (который уже запакован с side="bottom").
-
-        Кастомный scrollbar реализован через Canvas для полного контроля над стилями.
         """
         scroll_container = tk.Frame(self, bg=COLORS["bg"])
         scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
@@ -321,37 +210,17 @@ class MainWindow(tk.Tk):
             highlightthickness=0
         )
 
-        # Кастомный scrollbar: Canvas вместо tk.Scrollbar
-        # Даёт полный контроль над внешним видом (цвет, ширина, hover эффект)
-        self.scrollbar_canvas = tk.Canvas(
-            scroll_container,
-            width=8,  # Узкий scrollbar (8px)
-            bg=COLORS["bg_secondary"],  # Цвет желоба (тёмный)
-            highlightthickness=0,
-            bd=0
-        )
-
-        # Состояние scrollbar
-        self.scrollbar_thumb = None  # ID бегунка на Canvas
-        self.scrollbar_dragging = False  # Флаг перетаскивания
-        self.scrollbar_drag_start_y = 0  # Начальная Y позиция при перетаскивании
+        # Кастомный scrollbar через отдельный класс
+        self.scrollbar = CustomScrollbar(scroll_container, self.canvas_scroll)
 
         self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=COLORS["bg"])
 
         self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
-        self.canvas_scroll.bind("<Configure>", self._on_canvas_configure)
 
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas_scroll.configure(yscrollcommand=self._update_scrollbar)
+        self.canvas_scroll.configure(yscrollcommand=self.scrollbar.update)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
         self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
-
-        # Биндинг событий для кастомного scrollbar
-        self.scrollbar_canvas.bind("<Button-1>", self._on_scrollbar_click)
-        self.scrollbar_canvas.bind("<B1-Motion>", self._on_scrollbar_drag)
-        self.scrollbar_canvas.bind("<ButtonRelease-1>", self._on_scrollbar_release)
-        self.scrollbar_canvas.bind("<Enter>", self._on_scrollbar_enter)
-        self.scrollbar_canvas.bind("<Leave>", self._on_scrollbar_leave)
 
     def _create_vocab_slider(self):
         """
@@ -469,18 +338,25 @@ class MainWindow(tk.Tk):
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-        # Кнопка очистки кэша
-        self.btn_cache = self._create_toggle_button(
+        # Кнопка очистки кэша (action, не toggle)
+        self.btn_cache = self._create_action_button(
             status_bar,
             "Cache --",
-            self.clear_cache,
-            None
+            self.clear_cache
         )
         self.btn_cache.pack(side="left", padx=(0, 10))
 
     def _create_toggle_button(self, parent, text: str, command: Callable,
-                              config_key: Optional[str]) -> tk.Label:
-        """Создает кнопку-переключатель с hover эффектом"""
+                              config_key: str) -> tk.Label:
+        """
+        Создает кнопку-переключатель с двумя состояниями (on/off).
+
+        Args:
+            parent: Родительский виджет
+            text: Текст кнопки
+            command: Callback для переключения
+            config_key: Ключ в config для хранения состояния
+        """
         btn = tk.Label(
             parent,
             text=text,
@@ -499,24 +375,52 @@ class MainWindow(tk.Tk):
             btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
         def on_leave(e):
-            if config_key:
-                self._update_toggle_button_style(btn, config_key)
-            else:
-                btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
+            self._update_toggle_button_style(btn, config_key)
 
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
 
         # Установить начальный стиль
-        if config_key:
-            self._update_toggle_button_style(btn, config_key)
-        else:
+        self._update_toggle_button_style(btn, config_key)
+
+        return btn
+
+    def _create_action_button(self, parent, text: str, command: Callable) -> tk.Label:
+        """
+        Создает кнопку для однократных действий (без состояния on/off).
+
+        Args:
+            parent: Родительский виджет
+            text: Текст кнопки
+            command: Callback для действия
+        """
+        btn = tk.Label(
+            parent,
+            text=text,
+            font=("Segoe UI", 8),
+            bg=COLORS["bg_secondary"],
+            fg=COLORS["text_main"],
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            relief="flat"
+        )
+        btn.bind("<Button-1>", command)
+
+        # Hover эффект (простой, без состояния)
+        def on_enter(e):
+            btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
+
+        def on_leave(e):
             btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
+
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
 
         return btn
 
     def _update_toggle_button_style(self, button: tk.Label, config_key: str):
-        """Обновляет стиль кнопки-переключателя"""
+        """Обновляет стиль кнопки-переключателя на основе состояния в config"""
         is_enabled = cfg.get_bool("USER", config_key, True)
         button.config(
             bg=COLORS["text_accent"] if is_enabled else COLORS["bg_secondary"],
@@ -586,124 +490,6 @@ class MainWindow(tk.Tk):
 
         self.after(0, lambda: self.update_cache_button())
 
-    # ===== КАСТОМНЫЙ SCROLLBAR =====
-
-    def _update_scrollbar(self, first, last):
-        """
-        Обновляет позицию и размер кастомного scrollbar.
-        Вызывается автоматически Canvas при скролле.
-
-        Args:
-            first: Начальная позиция видимой области (0.0 - 1.0)
-            last: Конечная позиция видимой области (0.0 - 1.0)
-        """
-        first = float(first)
-        last = float(last)
-
-        # Удаляем старый бегунок
-        if self.scrollbar_thumb:
-            self.scrollbar_canvas.delete(self.scrollbar_thumb)
-
-        # Если весь контент виден - скрываем scrollbar
-        if first <= 0.0 and last >= 1.0:
-            self.scrollbar_canvas.pack_forget()
-            return
-
-        # Показываем scrollbar
-        if not self.scrollbar_canvas.winfo_ismapped():
-            self.scrollbar_canvas.pack(side="right", fill="y")
-
-        # Рассчитываем размер и позицию бегунка
-        canvas_height = self.scrollbar_canvas.winfo_height()
-        thumb_height = max(20, int(canvas_height * (last - first)))  # Минимум 20px
-        thumb_y = int(canvas_height * first)
-
-        # Рисуем бегунок (слегка серый, узкий с отступами)
-        self.scrollbar_thumb = self.scrollbar_canvas.create_rectangle(
-            2, thumb_y,  # x1, y1
-            6, thumb_y + thumb_height,  # x2, y2 (ширина 4px с отступами по 2px)
-            fill=COLORS["text_faint"],  # Серый цвет
-            outline="",  # Без обводки
-            tags="thumb"
-        )
-
-    def _on_scrollbar_click(self, event):
-        """
-        Обработка клика по scrollbar.
-        - Клик по бегунку: начало перетаскивания
-        - Клик по желобу: прыжок к позиции
-        """
-        # Проверяем клик по бегунку
-        item = self.scrollbar_canvas.find_closest(event.x, event.y)
-        if item and "thumb" in self.scrollbar_canvas.gettags(item[0]):
-            self.scrollbar_dragging = True
-            self.scrollbar_drag_start_y = event.y
-        else:
-            # Клик по желобу - прыжок к позиции
-            canvas_height = self.scrollbar_canvas.winfo_height()
-            fraction = event.y / canvas_height
-            self.canvas_scroll.yview_moveto(fraction)
-
-    def _on_scrollbar_drag(self, event):
-        """Обработка перетаскивания бегунка мышью"""
-        if not self.scrollbar_dragging:
-            return
-
-        # Вычисляем дельту и скроллим
-        delta_y = event.y - self.scrollbar_drag_start_y
-        canvas_height = self.scrollbar_canvas.winfo_height()
-
-        # Получаем текущую позицию скролла
-        current_pos = self.canvas_scroll.yview()[0]
-
-        # Вычисляем новую позицию
-        scroll_fraction = delta_y / canvas_height
-        new_pos = current_pos + scroll_fraction
-
-        # Применяем скролл
-        self.canvas_scroll.yview_moveto(new_pos)
-        self.scrollbar_drag_start_y = event.y
-
-    def _on_scrollbar_release(self, event):
-        """Завершение перетаскивания бегунка"""
-        self.scrollbar_dragging = False
-
-    def _on_scrollbar_enter(self, event):
-        """Hover эффект: бегунок становится чуть светлее"""
-        if self.scrollbar_thumb:
-            self.scrollbar_canvas.itemconfig(
-                self.scrollbar_thumb,
-                fill=COLORS["text_main"]  # Светлее при hover
-            )
-
-    def _on_scrollbar_leave(self, event):
-        """Возврат к обычному цвету при уходе курсора"""
-        if self.scrollbar_thumb:
-            self.scrollbar_canvas.itemconfig(
-                self.scrollbar_thumb,
-                fill=COLORS["text_faint"]  # Обратно к серому
-            )
-
-    def _force_scrollbar_update(self):
-        """
-        Принудительное обновление scrollbar после отрисовки контента.
-
-        Вызывается через after_idle() чтобы гарантировать что:
-        1. Все виджеты отрисованы
-        2. Canvas пересчитал scrollregion
-        3. Геометрия всех элементов известна
-
-        Это предотвращает мелькание scrollbar во время загрузки слова.
-        """
-        # Обновляем scrollregion
-        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
-
-        # Получаем текущие границы видимой области
-        first, last = self.canvas_scroll.yview()
-
-        # Вызываем обновление scrollbar
-        self._update_scrollbar(first, last)
-
     # ===== SCROLLBAR LOGIC =====
 
     def _on_mousewheel(self, event):
@@ -713,10 +499,6 @@ class MainWindow(tk.Tk):
     def _on_frame_configure(self, event):
         """Обновление scrollregion при изменении размера scrollable_frame"""
         self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
-
-    def _on_canvas_configure(self, event):
-        """Обработка изменения размера canvas_scroll"""
-        pass
 
     # ===== TOOLTIP LOGIC =====
 
@@ -792,31 +574,28 @@ class MainWindow(tk.Tk):
             widget.destroy()
         self.current_audio_urls = [None, None]
 
-        # Проверка наличия meanings
+        # Рендеринг
         if not full_data or not full_data.get("meanings"):
-            self._create_label(
-                self.scrollable_frame,
-                text="No detailed data available",
-                fg_key="text_faint"
-            ).pack(pady=10)
-            self.lbl_phonetic.config(text="")
+            self._show_no_dictionary_data()
+        else:
+            self._process_phonetics(full_data.get("phonetics", []))
+            self._render_meanings(full_data.get("meanings", []))
 
-            # Скрываем кнопки аудио
-            self.btn_audio_us.config(fg=COLORS["text_faint"])
-            self.btn_audio_uk.config(fg=COLORS["text_faint"])
+        # КРИТИЧНО: Показываем scrollbar ТОЛЬКО после полной загрузки данных
+        # force_update() автоматически разблокирует обновления
+        self.after_idle(self.scrollbar.force_update)
 
-            # Форсируем обновление scrollbar после отрисовки
-            self.after_idle(self._force_scrollbar_update)
-            return
+    def _show_no_dictionary_data(self):
+        """Отображает placeholder когда нет данных словаря"""
+        self._create_label(
+            self.scrollable_frame,
+            text="No detailed data available",
+            fg_key="text_faint"
+        ).pack(pady=10)
 
-        # Обработка фонетики и аудио
-        self._process_phonetics(full_data.get("phonetics", []))
-
-        # Отображение meanings
-        self._render_meanings(full_data.get("meanings", []))
-
-        # Форсируем обновление scrollbar после отрисовки всего контента
-        self.after_idle(self._force_scrollbar_update)
+        self.lbl_phonetic.config(text="")
+        self.btn_audio_us.config(fg=COLORS["text_faint"])
+        self.btn_audio_uk.config(fg=COLORS["text_faint"])
 
     def _process_phonetics(self, phonetics: List[Dict]):
         """Обработка фонетической информации"""
@@ -995,26 +774,6 @@ class MainWindow(tk.Tk):
         except Exception:
             pass
 
-    def _play_audio_worker_from_path(self, cache_path: str, fallback_url: str):
-        """
-        Воспроизведение без блокирующего ожидания.
-        Используется для автопроизношения.
-        """
-        try:
-            from playsound import playsound
-            from network import streaming_play_and_cache
-
-            # Если файл есть - играем мгновенно
-            if os.path.exists(cache_path):
-                playsound(cache_path)
-                return
-
-            # Иначе - streaming + кэширование
-            streaming_play_and_cache(fallback_url, cache_path)
-
-        except Exception:
-            pass
-
     # ===== IMAGE HANDLER =====
 
     def update_img_ui(self, path: Optional[str], source: str):
@@ -1089,7 +848,16 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """Сброс UI для нового слова"""
+        """
+        Сброс UI для нового слова.
+
+        КРИТИЧНО: Вызывается ПЕРВЫМ перед загрузкой любых данных.
+        Немедленно блокирует scrollbar чтобы он не появлялся во время загрузки.
+        """
+        # ПЕРВЫМ ДЕЛОМ: Блокируем scrollbar и скрываем его
+        # Это предотвращает его появление во время загрузки данных
+        self.scrollbar.block_updates()
+
         self.lbl_word.config(text=word)
         self.lbl_phonetic.config(text="")
         self.lbl_rus.config(
@@ -1103,6 +871,7 @@ class MainWindow(tk.Tk):
         )
         self.current_audio_urls = [None, None]
 
+        # Очистка контента
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
 
@@ -1113,7 +882,6 @@ class MainWindow(tk.Tk):
         self.update_cache_button()
 
         # Сброс позиции скролла в начало
-        # Гарантирует что новое слово всегда показывается с верхней позиции
         self.canvas_scroll.yview_moveto(0)
 
     # ===== WINDOW CONTROLS =====
@@ -1135,21 +903,6 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "WindowWidth", self.winfo_width())
         cfg.set("USER", "WindowHeight", self.winfo_height())
 
-    def _toggle_setting(self, config_key: str, button: tk.Label,
-                        on_enable: Optional[Callable] = None,
-                        on_disable: Optional[Callable] = None):
-        """Универсальный toggle для любой настройки"""
-        current = cfg.get_bool("USER", config_key, True)
-        new_state = not current
-        cfg.set("USER", config_key, new_state)
-
-        if new_state and on_enable:
-            on_enable()
-        elif not new_state and on_disable:
-            on_disable()
-
-        self._update_toggle_button_style(button, config_key)
-
     def toggle_sentence_window(self, event=None):
         """Переключение окна предложений"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
@@ -1165,7 +918,10 @@ class MainWindow(tk.Tk):
 
     def toggle_auto_pronounce(self, event=None):
         """Переключение автопроизношения"""
-        self._toggle_setting("AutoPronounce", self.btn_toggle_pronounce)
+        current = cfg.get_bool("USER", "AutoPronounce", True)
+        new_state = not current
+        cfg.set("USER", "AutoPronounce", new_state)
+        self._update_toggle_button_style(self.btn_toggle_pronounce, "AutoPronounce")
 
     # ===== VOCAB SLIDER =====
 
@@ -1191,10 +947,7 @@ class MainWindow(tk.Tk):
         x = self.winfo_x() + self.winfo_width() + 10
         y = self.winfo_y()
 
-        # Используем новый метод show() с параметрами
         self.popup.show(x, y)
-
-        # Обновляем содержимое
         self.update_popup_content()
 
     def move_popup(self, event):
