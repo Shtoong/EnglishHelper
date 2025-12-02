@@ -29,10 +29,10 @@ class CustomScrollbar:
     """
 
     # ===== КОНСТАНТЫ ДИЗАЙНА =====
-    CANVAS_WIDTH = 8          # Ширина желоба scrollbar
-    THUMB_WIDTH = 4           # Ширина бегунка
-    THUMB_PADDING = 2         # Отступы бегунка от краёв (слева/справа)
-    MIN_THUMB_HEIGHT = 20     # Минимальная высота бегунка в пикселях
+    CANVAS_WIDTH = 8  # Ширина желоба scrollbar
+    THUMB_WIDTH = 4  # Ширина бегунка
+    THUMB_PADDING = 2  # Отступы бегунка от краёв (слева/справа)
+    MIN_THUMB_HEIGHT = 20  # Минимальная высота бегунка в пикселях
 
     def __init__(self, parent, canvas_scroll):
         """
@@ -52,10 +52,10 @@ class CustomScrollbar:
         )
 
         # Состояние
-        self.thumb = None               # ID прямоугольника бегунка
-        self._dragging = False          # Флаг активного перетаскивания
-        self._drag_start_y = 0          # Y координата начала drag
-        self._update_blocked = False    # Блокировка автообновлений во время загрузки
+        self.thumb = None  # ID прямоугольника бегунка
+        self._dragging = False  # Флаг активного перетаскивания
+        self._drag_start_y = 0  # Y координата начала drag
+        self._update_blocked = False  # Блокировка автообновлений во время загрузки
 
         # Привязка событий
         self._bind_events()
@@ -111,6 +111,7 @@ class CustomScrollbar:
     def update(self, first, last):
         """
         Обновляет позицию и размер бегунка.
+
         Вызывается автоматически через yscrollcommand.
 
         Args:
@@ -146,12 +147,12 @@ class CustomScrollbar:
 
         # Рисуем бегунок (узкий прямоугольник с отступами)
         self.thumb = self.scrollbar_canvas.create_rectangle(
-            self.THUMB_PADDING,                           # x1
-            thumb_y,                                      # y1
-            self.THUMB_PADDING + self.THUMB_WIDTH,        # x2
-            thumb_y + thumb_height,                       # y2
-            fill=COLORS["text_faint"],                    # Серый цвет
-            outline="",                                   # Без обводки
+            self.THUMB_PADDING,  # x1
+            thumb_y,  # y1
+            self.THUMB_PADDING + self.THUMB_WIDTH,  # x2
+            thumb_y + thumb_height,  # y2
+            fill=COLORS["text_faint"],  # Серый цвет
+            outline="",  # Без обводки
             tags="thumb"
         )
 
@@ -175,12 +176,14 @@ class CustomScrollbar:
         # Получаем текущие границы видимой области
         first, last = self.canvas_scroll.yview()
 
-        # Вызываем обновление (теперь не заблокировано)
+        # КРИТИЧНО: Явно вызываем update() с новыми значениями
+        # Без этого scrollbar не появится т.к. update() просто вернётся после разблокировки
         self.update(first, last)
 
     def _on_click(self, event):
         """
         Обработка клика по scrollbar.
+
         - Клик по бегунку: начало перетаскивания
         - Клик по желобу: прыжок к позиции
 
