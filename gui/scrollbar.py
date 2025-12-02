@@ -4,11 +4,12 @@
 Обеспечивает полный контроль над внешним видом:
 - Узкий минималистичный дизайн (8px желоб, 4px бегунок)
 - Hover эффекты
-- Автоматическое скрытие когда весь контент виден
+- Автоматическое скрытие когда весь контент виден (опционально)
 - Drag & drop перетаскивание бегунка
 - Клик по желобу для прыжка к позиции
 - Блокировка автообновлений во время загрузки контента
 - Изоляция событий (не конфликтует с перемещением окна)
+- Режим always_visible для окон где scrollbar должен быть всегда
 """
 
 import tkinter as tk
@@ -34,13 +35,15 @@ class CustomScrollbar:
     THUMB_PADDING = 2  # Отступы бегунка от краёв (слева/справа)
     MIN_THUMB_HEIGHT = 20  # Минимальная высота бегунка в пикселях
 
-    def __init__(self, parent, canvas_scroll):
+    def __init__(self, parent, canvas_scroll, always_visible=False):
         """
         Args:
             parent: Родительский контейнер для размещения scrollbar
             canvas_scroll: Canvas который нужно скроллить
+            always_visible: Если True, scrollbar всегда виден (даже если контент влезает)
         """
         self.canvas_scroll = canvas_scroll
+        self.always_visible = always_visible
 
         # Создание Canvas для scrollbar
         self.scrollbar_canvas = tk.Canvas(
@@ -131,10 +134,12 @@ class CustomScrollbar:
             self.scrollbar_canvas.delete(self.thumb)
             self.thumb = None
 
-        # Если весь контент виден - скрываем scrollbar
+        # Если весь контент виден - скрываем scrollbar (если не always_visible)
         if first <= 0.0 and last >= 1.0:
-            self.pack_forget()
-            return
+            if not self.always_visible:
+                self.pack_forget()
+                return
+            # Если always_visible - продолжаем отрисовку бегунка
 
         # Показываем scrollbar если скрыт
         if not self.winfo_ismapped():
