@@ -5,6 +5,7 @@
 - Отрисовку meanings (части речи, определения, примеры)
 - Отрисовку синонимов с интерактивностью
 - Placeholder при отсутствии данных
+- Прокрутку колёсиком мыши через explicit binding
 """
 
 import tkinter as tk
@@ -21,12 +22,14 @@ class DictionaryRenderer:
     - Создание UI элементов (labels, frames)
     - Привязка hover эффектов через callbacks
     - Управление интерактивными синонимами
+    - Включение прокрутки колёсиком мыши для всех виджетов
 
     Dependencies:
     - parent_frame: куда рендерить
     - content_width_callback: для wraplength
     - hover_callback: для биндинга hover-переводов
     - synonym_click_callback: для кликов по синонимам
+    - canvas: для прокрутки при событии MouseWheel
     """
 
     # Константы рендеринга
@@ -38,7 +41,8 @@ class DictionaryRenderer:
                  hover_callback: Callable[[tk.Widget, str], None],
                  synonym_click_callback: Callable[[str], None],
                  synonym_enter_callback: Callable[[object, str, tk.Label], None],
-                 synonym_leave_callback: Callable[[object, tk.Label], None]):
+                 synonym_leave_callback: Callable[[object, tk.Label], None],
+                 canvas: tk.Canvas):
         """
         Args:
             parent_frame: Frame куда рендерить словарные данные
@@ -47,6 +51,7 @@ class DictionaryRenderer:
             synonym_click_callback: Callback для клика по синониму
             synonym_enter_callback: Callback для hover синонима
             synonym_leave_callback: Callback для leave синонима
+            canvas: Canvas для прокрутки (обычно canvas_scroll из MainWindow)
         """
         self.parent_frame = parent_frame
         self.get_content_width = content_width_callback
@@ -54,6 +59,39 @@ class DictionaryRenderer:
         self.on_synonym_click = synonym_click_callback
         self.on_synonym_enter = synonym_enter_callback
         self.on_synonym_leave = synonym_leave_callback
+        self.canvas = canvas
+
+    def _enable_mousewheel_scroll(self, widget: tk.Widget) -> None:
+        """
+        Включает прокрутку колёсиком мыши для виджета.
+
+        КРИТИЧНО: НЕ использует bindtags() чтобы не сломать другие события
+        (<Enter>, <Leave>, <Button-1>). Вместо этого добавляет explicit binding
+        на <MouseWheel> который прокручивает canvas и останавливает всплытие.
+
+        Использует add="+" чтобы не заменять существующие bindings на виджете
+        (например, hover эффекты для синонимов).
+
+        Args:
+            widget: Виджет для которого нужно включить прокрутку
+        """
+        widget.bind("<MouseWheel>", self._handle_mousewheel, add="+")
+
+    def _handle_mousewheel(self, event) -> str:
+        """
+        Обработчик события MouseWheel для дочерних виджетов.
+
+        Прокручивает родительский canvas и останавливает всплытие события
+        чтобы избежать двойной прокрутки.
+
+        Args:
+            event: Tkinter event объект с delta (направление прокрутки)
+
+        Returns:
+            "break" для остановки дальнейшей обработки события
+        """
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
 
     def render(self, full_data: Optional[Dict]) -> None:
         """
@@ -80,13 +118,17 @@ class DictionaryRenderer:
 
     def _render_no_data_placeholder(self) -> None:
         """Отрисовывает placeholder когда нет словарных данных"""
-        tk.Label(
+        lbl = tk.Label(
             self.parent_frame,
             text="No detailed data available",
             font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
-        ).pack(pady=10)
+        )
+        lbl.pack(pady=10)
+
+        # Включаем прокрутку для placeholder
+        self._enable_mousewheel_scroll(lbl)
 
     def _render_meanings(self, meanings: List[Dict]) -> None:
         """
@@ -104,14 +146,18 @@ class DictionaryRenderer:
         for meaning in meanings:
             # Часть речи (noun, verb, adjective, etc)
             pos = meaning.get("partOfSpeech", "")
-            tk.Label(
+            lbl_pos = tk.Label(
                 self.parent_frame,
                 text=pos,
                 font=FONTS["pos"],
                 bg=COLORS["bg"],
                 fg=COLORS["text_pos"],
                 anchor="w"
-            ).pack(fill="x", pady=(10, 5))
+            )
+            lbl_pos.pack(fill="x", pady=(10, 5))
+
+            # Включаем прокрутку для заголовка части речи
+            self._enable_mousewheel_scroll(lbl_pos)
 
             # Определения и примеры
             self._render_definitions(meaning.get("definitions", []))
@@ -120,12 +166,16 @@ class DictionaryRenderer:
             self._render_synonyms(meaning.get("synonyms", []))
 
             # Разделитель между meanings
-            tk.Frame(
+            separator = tk.Frame(
                 self.parent_frame,
                 height=1,
                 bg=COLORS["separator"],
                 width=360
-            ).pack(pady=5)
+            )
+            separator.pack(pady=5)
+
+            # Включаем прокрутку для разделителя
+            self._enable_mousewheel_scroll(separator)
 
     def _render_definitions(self, definitions: List[Dict]) -> None:
         """
@@ -162,6 +212,10 @@ class DictionaryRenderer:
             # Биндинг hover-перевода на определение
             self.bind_hover(lbl_def, defn.get('definition', ''))
 
+            # КРИТИЧНО: Включаем прокрутку ПОСЛЕ других bindings
+            # чтобы не конфликтовать с hover эффектами
+            self._enable_mousewheel_scroll(lbl_def)
+
             # Пример (если есть)
             if defn.get("example"):
                 ex_text = f'   "{defn["example"]}"'
@@ -179,6 +233,9 @@ class DictionaryRenderer:
 
                 # Биндинг hover-перевода на пример
                 self.bind_hover(lbl_ex, defn.get("example", ""))
+
+                # КРИТИЧНО: Включаем прокрутку ПОСЛЕ других bindings
+                self._enable_mousewheel_scroll(lbl_ex)
 
     def _render_synonyms(self, synonyms: List[str]) -> None:
         """
@@ -201,14 +258,21 @@ class DictionaryRenderer:
         syn_frame = tk.Frame(self.parent_frame, bg=COLORS["bg"])
         syn_frame.pack(fill="x", padx=10, pady=(5, 10))
 
+        # Включаем прокрутку для контейнера
+        self._enable_mousewheel_scroll(syn_frame)
+
         # Label "Syn:"
-        tk.Label(
+        lbl_syn_header = tk.Label(
             syn_frame,
             text="Syn:",
             font=FONTS["synonym_label"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
-        ).pack(side="left", anchor="n")
+        )
+        lbl_syn_header.pack(side="left", anchor="n")
+
+        # Включаем прокрутку для заголовка
+        self._enable_mousewheel_scroll(lbl_syn_header)
 
         # Теги синонимов (ограничиваем количество)
         for syn in synonyms[:self.MAX_SYNONYMS]:
@@ -237,3 +301,7 @@ class DictionaryRenderer:
                 "<Button-1>",
                 lambda e, w=syn: self.on_synonym_click(w)
             )
+
+            # КРИТИЧНО: Включаем прокрутку ПОСЛЕ интерактивных bindings
+            # add="+" гарантирует что <Enter>, <Leave>, <Button-1> сохранятся
+            self._enable_mousewheel_scroll(tag)
