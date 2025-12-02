@@ -11,6 +11,7 @@ Features:
 - Auto-scroll к разделителю при обновлении
 - Кликабельные слова для поиска
 - Синхронизация высоты с главным окном
+- Плавная анимация появления/исчезновения (fade-in/fade-out)
 """
 
 import tkinter as tk
@@ -29,6 +30,7 @@ class VocabPopup(tk.Toplevel):
     - Debounced обновление списка при движении слайдера
     - Кликабельные слова для поиска в главном окне
     - Автоматическая прокрутка к разделителю
+    - Плавная анимация показа/скрытия окна
     """
 
     # ===== КОНСТАНТЫ =====
@@ -37,6 +39,12 @@ class VocabPopup(tk.Toplevel):
     WORDS_AFTER_CUTOFF = 100
     DEBOUNCE_DELAY_MS = 300  # Задержка перед обновлением списка
     BORDER_COLOR = "#FFD700"  # Желтая рамка
+
+    # Параметры анимации (как в SentenceWindow)
+    ANIMATION_STEPS = 10  # Количество шагов анимации
+    ANIMATION_STEP_MS = 15  # Миллисекунд на шаг (итого ~150ms)
+    FADE_IN_START = 0.0  # Начальная прозрачность при появлении
+    FADE_OUT_END = 0.0  # Конечная прозрачность при скрытии
 
     def __init__(self, master):
         super().__init__(master)
@@ -56,6 +64,10 @@ class VocabPopup(tk.Toplevel):
         self._update_timer: Optional[int] = None
         self._current_cutoff = -1
         self.search_callback: Optional[Callable[[str], None]] = None
+
+        # Состояние анимации
+        self._animation_id: Optional[int] = None
+        self._is_animating = False
 
         # ===== ВЕРХНЯЯ ПАНЕЛЬ =====
         self._create_top_bar()
@@ -106,7 +118,6 @@ class VocabPopup(tk.Toplevel):
         )
 
         # Кастомный scrollbar с always_visible=True
-        # ИЗМЕНЕНО: Добавлен параметр always_visible=True для постоянной видимости
         self.scrollbar = CustomScrollbar(scroll_container, self.canvas, always_visible=True)
         self.scrollbar.pack(side="right", fill="y")
 
@@ -168,7 +179,6 @@ class VocabPopup(tk.Toplevel):
         self._update_timer = None
 
         # Получаем слова из vocab
-        # Вариант A: 100 слов ДО cutoff (ignored) | separator | 100 слов ПОСЛЕ cutoff (active)
         ignored, active = get_word_range(
             cutoff,
             self.WORDS_BEFORE_CUTOFF,
@@ -253,7 +263,7 @@ class VocabPopup(tk.Toplevel):
         lbl = tk.Label(
             self.scrollable_frame,
             text=display_text,
-            font=FONTS["definition"],  # Размер как у definitions в главном окне
+            font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=color,
             cursor="hand2",
@@ -262,7 +272,6 @@ class VocabPopup(tk.Toplevel):
         lbl.pack(fill="x", padx=10, pady=1)
 
         # КРИТИЧНО: Используем default argument для захвата значений word и color
-        # Без этого все labels будут использовать последние значения из цикла
 
         # Клик → поиск слова (САМЫМ ПЕРВЫМ, чтобы не конфликтовать с hover)
         lbl.bind("<Button-1>", lambda e, w=word: self._on_word_click(w))
@@ -272,32 +281,15 @@ class VocabPopup(tk.Toplevel):
         lbl.bind("<Leave>", lambda e, c=color, label=lbl: self._on_hover_leave(label, c))
 
     def _on_hover_enter(self, label: tk.Label, original_color: str):
-        """
-        Hover enter эффект.
-
-        Args:
-            label: Label widget
-            original_color: Оригинальный цвет текста (для восстановления)
-        """
+        """Hover enter эффект"""
         label.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
     def _on_hover_leave(self, label: tk.Label, original_color: str):
-        """
-        Hover leave эффект.
-
-        Args:
-            label: Label widget
-            original_color: Оригинальный цвет текста для восстановления
-        """
+        """Hover leave эффект"""
         label.config(bg=COLORS["bg"], fg=original_color)
 
     def _on_word_click(self, word: str):
-        """
-        Обработка клика по слову.
-
-        Args:
-            word: Слово для поиска
-        """
+        """Обработка клика по слову"""
         if self.search_callback:
             self.search_callback(word)
 
@@ -341,9 +333,113 @@ class VocabPopup(tk.Toplevel):
         main_height = self.main_window.winfo_height()
         self.geometry(f"{self.WINDOW_WIDTH}x{main_height}")
 
+    # ===== АНИМАЦИЯ (КАК В SENT_WINDOW) =====
+
+    def show_animated(self, x: int, y: int):
+        """
+        Показывает popup в заданной позиции с плавной анимацией fade-in.
+
+        Args:
+            x: X координата
+            y: Y координата
+        """
+        # Если уже идет анимация - игнорируем
+        if self._is_animating:
+            return
+
+        # Синхронизируем высоту
+        self.sync_height_with_main()
+
+        # Устанавливаем позицию
+        main_height = self.main_window.winfo_height()
+        self.geometry(f"{self.WINDOW_WIDTH}x{main_height}+{x}+{y}")
+
+        # Устанавливаем начальную прозрачность
+        self.attributes("-alpha", self.FADE_IN_START)
+
+        # Показываем окно (невидимое)
+        self.deiconify()
+
+        # Запускаем анимацию появления
+        self._is_animating = True
+        self._animate_alpha(self.FADE_IN_START, 1.0, self._on_fade_in_complete)
+
+    def close_animated(self):
+        """
+        Закрывает popup с плавной анимацией fade-out.
+
+        Используется при клике на ползунок когда popup уже открыт.
+        """
+        # Если уже идет анимация - игнорируем
+        if self._is_animating:
+            return
+
+        # Запускаем анимацию исчезновения
+        self._is_animating = True
+        self._animate_alpha(1.0, self.FADE_OUT_END, self._on_fade_out_complete)
+
+    def _on_fade_in_complete(self):
+        """Callback после завершения анимации появления"""
+        self._is_animating = False
+
+    def _on_fade_out_complete(self):
+        """Callback после завершения анимации исчезновения"""
+        self._is_animating = False
+
+        # Скрываем окно
+        self.withdraw()
+
+        # Восстанавливаем полную прозрачность для следующего показа
+        self.attributes("-alpha", 1.0)
+
+    def _animate_alpha(self, start_alpha: float, end_alpha: float, on_complete: Optional[Callable]):
+        """
+        Универсальная функция анимации прозрачности окна.
+
+        Args:
+            start_alpha: Начальное значение alpha (0.0 - 1.0)
+            end_alpha: Конечное значение alpha (0.0 - 1.0)
+            on_complete: Callback функция после завершения
+        """
+        # Отменяем предыдущую анимацию если есть
+        if self._animation_id:
+            self.after_cancel(self._animation_id)
+
+        delta = (end_alpha - start_alpha) / self.ANIMATION_STEPS
+        current_step = [0]  # Используем list для mutable замыкания
+
+        def step():
+            current_step[0] += 1
+            new_alpha = start_alpha + (delta * current_step[0])
+
+            # Ограничиваем значение в пределах [0.0, 1.0]
+            new_alpha = max(0.0, min(1.0, new_alpha))
+
+            try:
+                self.attributes("-alpha", new_alpha)
+            except tk.TclError:
+                # Окно было уничтожено во время анимации
+                return
+
+            if current_step[0] < self.ANIMATION_STEPS:
+                # Продолжаем анимацию
+                self._animation_id = self.after(self.ANIMATION_STEP_MS, step)
+            else:
+                # Анимация завершена
+                self._animation_id = None
+                if on_complete:
+                    on_complete()
+
+        # Запускаем первый шаг
+        step()
+
+    # ===== МЕТОДЫ БЕЗ АНИМАЦИИ (ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ) =====
+
     def show_at_position(self, x: int, y: int):
         """
-        Показывает popup в заданной позиции.
+        Показывает popup БЕЗ анимации (для обратной совместимости).
+
+        Для показа с анимацией используйте show_animated().
 
         Args:
             x: X координата
@@ -356,9 +452,15 @@ class VocabPopup(tk.Toplevel):
         main_height = self.main_window.winfo_height()
         self.geometry(f"{self.WINDOW_WIDTH}x{main_height}+{x}+{y}")
 
-        # Показываем окно
+        # Показываем окно сразу с полной прозрачностью
+        self.attributes("-alpha", 1.0)
         self.deiconify()
 
     def close(self):
-        """Закрывает popup (скрывает через withdraw)"""
+        """
+        Закрывает popup БЕЗ анимации (для обратной совместимости).
+
+        Используется при клике на крестик.
+        Для закрытия с анимацией используйте close_animated().
+        """
         self.withdraw()
