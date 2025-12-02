@@ -79,7 +79,6 @@ class MainWindow(tk.Tk):
         # ===== СОСТОЯНИЕ =====
         self.sources = {"trans": "wait", "img": "wait"}
         self.dragging_allowed = False
-        self.popup = None
         self.trans_cache = OrderedDict()  # LRU cache для hover-переводов
         self.hover_timer = None
 
@@ -91,6 +90,7 @@ class MainWindow(tk.Tk):
         # Эти компоненты создаются ДО _init_ui т.к. нужны для инициализации менеджеров
         self.sent_window = SentenceWindow(self)
         self.tooltip = TranslationTooltip(self)
+        self.popup = VocabPopup(self)
 
         # Инициализация UI (создаёт все виджеты)
         self._init_ui()
@@ -269,7 +269,10 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.update)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
-        self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # ИСПРАВЛЕНО: Используем локальные bind вместо bind_all
+        self.canvas_scroll.bind("<MouseWheel>", self._on_mousewheel)
+        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
 
     def _create_vocab_slider(self):
         """
@@ -410,8 +413,7 @@ class MainWindow(tk.Tk):
     def _sync_initial_state(self):
         """Синхронизация UI с настройками при запуске"""
         if cfg.get_bool("USER", "ShowSentenceWindow", True):
-            # Показываем С АНИМАЦИЕЙ даже при запуске
-            self.after(100, self.sent_window.show_animated)
+            self.sent_window.show()
         else:
             self.sent_window.withdraw()
 
@@ -458,6 +460,7 @@ class MainWindow(tk.Tk):
     def _on_mousewheel(self, event):
         """Прокрутка колёсиком мыши"""
         self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"  # КРИТИЧНО: Останавливаем всплытие события
 
     def _on_frame_configure(self, event):
         """Обновление scrollregion при изменении размера scrollable_frame"""
@@ -682,12 +685,7 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "WindowHeight", self.winfo_height())
 
     def toggle_sentence_window(self, event=None):
-        """
-        Переключение окна предложений с анимацией.
-
-        При включении: fade-in анимация
-        При выключении: fade-out анимация через close_window()
-        """
+        """Переключение окна предложений с анимацией"""
         current = cfg.get_bool("USER", "ShowSentenceWindow", True)
         new_state = not current
 
@@ -725,33 +723,29 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
     def show_popup(self, event):
-        """Показать popup с ignored words"""
+        """Показывает popup при клике на слайдер"""
         self.dragging_allowed = False
-        if not self.popup:
-            self.popup = VocabPopup(self)
 
         # Позиционируем справа от главного окна
         x = self.winfo_x() + self.winfo_width() + 10
         y = self.winfo_y()
 
-        self.popup.show(x, y)
-        self.update_popup_content()
+        # Показываем окно с синхронизацией высоты
+        self.popup.show_at_position(x, y)
+
+        # Обновляем содержимое
+        self.popup.update_words(self.vocab_var.get())
 
     def move_popup(self, event):
-        """Обновление popup при движении слайдера"""
+        """Обновляет значение и запускает debounced обновление popup"""
         self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
-        self.update_popup_content()
 
-    def update_popup_content(self):
-        """Обновление содержимого popup"""
-        if self.popup:
+        # Debounced обновление popup (если открыт)
+        if self.popup and self.popup.winfo_viewable():
             self.popup.update_words(self.vocab_var.get())
 
     def hide_popup_and_save(self, event):
-        """Скрытие popup и сохранение"""
-        if self.popup:
-            self.popup.destroy()
-            self.popup = None
+        """Сохраняет уровень (popup НЕ закрывается автоматически)"""
         self.save_level()
 
     # ===== WINDOW DRAGGING =====
@@ -792,5 +786,9 @@ class MainWindow(tk.Tk):
 
     def close_app(self):
         """Закрытие приложения"""
+        # Уничтожаем popup если существует
+        if hasattr(self, 'popup') and self.popup:
+            self.popup.destroy()
+
         keyboard.unhook_all()
         self.destroy()
