@@ -49,6 +49,10 @@ def main():
     # Менеджер обработки слов
     word_processor = WordProcessor(app)
 
+    # КРИТИЧНО: Устанавливаем callback для VocabPopup с force=True
+    # чтобы клики из popup игнорировали фильтр "слишком простых" слов
+    app.popup.search_callback = lambda word: word_processor.process_word(word, force=True)
+
     # Менеджер предложений
     sentence_manager = SentenceManager(app.sent_window, editor)
 
@@ -59,7 +63,7 @@ def main():
     )
 
     # ===== РЕГИСТРАЦИЯ CALLBACKS =====
-    # Callback для клика по синониму в главном окне
+    # Callback для клика по синониму в главном окне (обычный, без force)
     app.search_callback = word_processor.process_word
 
     # ===== ЗАПУСК =====
