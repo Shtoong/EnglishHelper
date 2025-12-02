@@ -12,10 +12,43 @@ from playsound import playsound
 
 from config import cfg, AUDIO_DIR
 from gui.styles import COLORS, FONTS
-from gui.widgets import ResizeGrip
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
 from network import fetch_sentence_translation, download_and_cache_audio, get_audio_cache_path
+
+
+class ResizeGrip(tk.Label):
+    """Виджет для изменения размера окна"""
+
+    def __init__(self, parent, resize_callback, finish_callback, bg, fg):
+        super().__init__(parent, text="◢", font=("Arial", 10), bg=bg, fg=fg, cursor="sizing")
+        self.resize_callback = resize_callback
+        self.finish_callback = finish_callback
+        self.bind("<Button-1>", self._start_resize)
+        self.bind("<B1-Motion>", self._do_resize)
+        self.bind("<ButtonRelease-1>", self._stop_resize)
+        self._x = 0
+        self._y = 0
+
+    def _start_resize(self, event):
+        """Запоминаем начальную позицию в экранных координатах"""
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"
+
+    def _do_resize(self, event):
+        """Изменяем размер на основе дельты в экранных координатах"""
+        dx = event.x_root - self._x
+        dy = event.y_root - self._y
+        self.resize_callback(dx, dy)
+        self._x = event.x_root
+        self._y = event.y_root
+        return "break"
+
+    def _stop_resize(self, event):
+        """Завершаем изменение размера и сохраняем"""
+        self.finish_callback()
+        return "break"
 
 
 class TranslationTooltip:
@@ -142,6 +175,11 @@ class MainWindow(tk.Tk):
         self._bind_events()
         self._sync_initial_state()
         self.update_cache_button()
+
+    @property
+    def content_width(self) -> int:
+        """Ширина области контента с учетом padding"""
+        return self.winfo_width() - self.CONTENT_PADDING
 
     def _init_ui(self):
         """
@@ -293,10 +331,7 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.set)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
-
-        # ИСПРАВЛЕНИЕ: bind вместо bind_all для изоляции событий
-        # Предотвращает прокрутку главного окна при скролле в SentenceWindow
-        self.canvas_scroll.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas_scroll.bind_all("<MouseWheel>", self._on_mousewheel)
 
     def _create_vocab_slider(self):
         """
@@ -444,27 +479,29 @@ class MainWindow(tk.Tk):
             btn.config(bg=COLORS["text_accent"], fg=COLORS["bg"])
 
         def on_leave(e):
-            self._update_toggle_button_style(btn, config_key)
+            if config_key:
+                self._update_toggle_button_style(btn, config_key)
+            else:
+                btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
 
         # Установить начальный стиль
-        self._update_toggle_button_style(btn, config_key)
+        if config_key:
+            self._update_toggle_button_style(btn, config_key)
+        else:
+            btn.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
 
         return btn
 
-    def _update_toggle_button_style(self, button: tk.Label, config_key: Optional[str] = None):
+    def _update_toggle_button_style(self, button: tk.Label, config_key: str):
         """Обновляет стиль кнопки-переключателя"""
-        if config_key:
-            is_enabled = cfg.get_bool("USER", config_key, True)
-            button.config(
-                bg=COLORS["text_accent"] if is_enabled else COLORS["bg_secondary"],
-                fg=COLORS["bg"] if is_enabled else COLORS["text_faint"]
-            )
-        else:
-            # Стиль по умолчанию для кнопок без config_key (например, Cache)
-            button.config(bg=COLORS["bg_secondary"], fg=COLORS["text_main"])
+        is_enabled = cfg.get_bool("USER", config_key, True)
+        button.config(
+            bg=COLORS["text_accent"] if is_enabled else COLORS["bg_secondary"],
+            fg=COLORS["bg"] if is_enabled else COLORS["text_faint"]
+        )
 
     def _bind_events(self):
         """Привязка событий"""
@@ -635,12 +672,8 @@ class MainWindow(tk.Tk):
         # Обработка фонетики и аудио
         self._process_phonetics(full_data.get("phonetics", []))
 
-        # ОПТИМИЗАЦИЯ: Кэшируем content_width один раз перед отрисовкой
-        # Избегаем множественных вызовов winfo_width() в цикле
-        content_width = self.winfo_width() - self.CONTENT_PADDING
-
         # Отображение meanings
-        self._render_meanings(full_data.get("meanings", []), content_width)
+        self._render_meanings(full_data.get("meanings", []))
 
     def _process_phonetics(self, phonetics: List[Dict]):
         """Обработка фонетической информации"""
@@ -667,52 +700,23 @@ class MainWindow(tk.Tk):
         )
 
     def _extract_audio_urls(self, phonetics: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Извлекает US и UK аудио URL с приоритетом.
+        """Извлекает US и UK аудио URL с приоритетом"""
+        us = next(
+            (p["audio"] for p in phonetics if "-us.mp3" in p.get("audio", "").lower() or "en-US" in p.get("audio", "")),
+            None)
+        uk = next(
+            (p["audio"] for p in phonetics if "-uk.mp3" in p.get("audio", "").lower() or "en-GB" in p.get("audio", "")),
+            None)
 
-        ОПТИМИЗАЦИЯ: Один проход вместо трех, early exit при нахождении обоих.
+        if not us or not uk:
+            available = [p["audio"] for p in phonetics if p.get("audio")]
+            us = us or (available[0] if len(available) > 0 else None)
+            uk = uk or (available[1] if len(available) > 1 else None)
 
-        Returns:
-            (us_url, uk_url): Кортеж с URL для US и UK произношения
-        """
-        us, uk = None, None
-        fallback = []
+        return us, uk
 
-        for p in phonetics:
-            audio = p.get("audio", "")
-            if not audio:
-                continue
-
-            audio_lower = audio.lower()
-
-            # Проверяем US
-            if not us and ("-us.mp3" in audio_lower or "en-US" in audio):
-                us = audio
-            # Проверяем UK
-            elif not uk and ("-uk.mp3" in audio_lower or "en-GB" in audio):
-                uk = audio
-            # Собираем fallback
-            elif len(fallback) < 2:
-                fallback.append(audio)
-
-            # Early exit: если нашли оба - прерываем цикл
-            if us and uk:
-                break
-
-        # Используем fallback если не нашли специфичные
-        return (
-            us or (fallback[0] if fallback else None),
-            uk or (fallback[1] if len(fallback) > 1 else None)
-        )
-
-    def _render_meanings(self, meanings: List[Dict], content_width: int):
-        """
-        Отрисовка meanings (части речи, определения, примеры, синонимы).
-
-        Args:
-            meanings: Список словарных определений
-            content_width: Закэшированная ширина области контента
-        """
+    def _render_meanings(self, meanings: List[Dict]):
+        """Отрисовка meanings (части речи, определения, примеры, синонимы)"""
         for meaning in meanings:
             # Часть речи
             pos = meaning.get("partOfSpeech", "")
@@ -725,7 +729,7 @@ class MainWindow(tk.Tk):
             ).pack(fill="x", pady=(10, 5))
 
             # Определения и примеры
-            self._render_definitions(meaning.get("definitions", []), content_width)
+            self._render_definitions(meaning.get("definitions", []))
 
             # Синонимы
             self._render_synonyms(meaning.get("synonyms", []))
@@ -738,21 +742,15 @@ class MainWindow(tk.Tk):
                 width=360
             ).pack(pady=5)
 
-    def _render_definitions(self, definitions: List[Dict], content_width: int):
-        """
-        Отрисовка определений и примеров.
-
-        Args:
-            definitions: Список определений
-            content_width: Закэшированная ширина для wraplength
-        """
+    def _render_definitions(self, definitions: List[Dict]):
+        """Отрисовка определений и примеров"""
         for i, defn in enumerate(definitions, 1):
             # Определение
             def_text = f"{i}. {defn.get('definition', '')}"
             lbl_def = self._create_label(
                 self.scrollable_frame,
                 text=def_text,
-                wraplength=content_width,
+                wraplength=self.content_width,
                 justify="left",
                 anchor="w"
             )
@@ -767,7 +765,7 @@ class MainWindow(tk.Tk):
                     text=ex_text,
                     font_key="example",
                     fg_key="text_accent",
-                    wraplength=content_width,
+                    wraplength=self.content_width,
                     justify="left",
                     anchor="w"
                 )
