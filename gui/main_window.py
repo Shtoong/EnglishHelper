@@ -2,7 +2,7 @@
 Главное окно приложения EnglishHelper.
 
 Отображает:
-- Заголовок слова с фонетикой и аудио кнопками
+- Заголовок слова
 - Перевод на русский
 - Изображение ассоциации
 - Прокручиваемый список определений и примеров
@@ -10,7 +10,7 @@
 - Статус бар с кнопками управления
 
 Architecture:
-- Координирует работу компонентов (AudioManager, DictRenderer)
+- Координирует работу компонентов (DictRenderer)
 - Управляет layout и window state
 - Обрабатывает callbacks из main.pyw
 """
@@ -30,7 +30,6 @@ from gui.scrollbar import CustomScrollbar
 from gui.popup import VocabPopup
 from gui.sent_window import SentenceWindow
 from gui.buttons import ToggleButton, ActionButton
-from gui.audio_manager import AudioManager
 from gui.dict_renderer import DictionaryRenderer
 from network import fetch_sentence_translation
 
@@ -42,7 +41,7 @@ class MainWindow(tk.Tk):
     Responsibilities:
     - Window management (создание, перемещение, resize, закрытие)
     - Layout и UI creation
-    - Координация компонентов (audio, dict renderer, tooltip, etc)
+    - Координация компонентов (dict renderer, tooltip, etc)
     - Обработка callbacks из main.pyw
     - Vocab slider и popup управление
     """
@@ -101,13 +100,6 @@ class MainWindow(tk.Tk):
 
         # ===== СОЗДАНИЕ МЕНЕДЖЕРОВ =====
         # Создаются ПОСЛЕ _init_ui т.к. требуют ссылки на виджеты
-        self.audio_manager = AudioManager(
-            self.lbl_phonetic,
-            self.btn_audio_us,
-            self.btn_audio_uk
-        )
-
-        # ИЗМЕНЕНО: Добавлен параметр self.canvas_scroll для прокрутки
         self.dict_renderer = DictionaryRenderer(
             self.scrollable_frame,
             lambda: self.content_width,
@@ -115,7 +107,7 @@ class MainWindow(tk.Tk):
             self.on_synonym_click,
             self._on_synonym_enter,
             self._on_synonym_leave,
-            self.canvas_scroll  # Добавлен параметр для прокрутки
+            self.canvas_scroll
         )
 
         # Финальная настройка
@@ -189,7 +181,7 @@ class MainWindow(tk.Tk):
         btn_close.bind("<Button-1>", lambda e: self.close_app())
 
     def _create_word_header(self):
-        """Заголовок слова с фонетикой и аудио"""
+        """Заголовок слова"""
         self.lbl_word = self._create_label(
             self,
             text="English Helper",
@@ -197,36 +189,6 @@ class MainWindow(tk.Tk):
             fg_key="text_header"
         )
         self.lbl_word.pack(pady=(10, 5), anchor="center")
-
-        # Фрейм с фонетикой и кнопками аудио
-        phonetic_frame = tk.Frame(self, bg=COLORS["bg"])
-        phonetic_frame.pack(anchor="center", pady=5)
-
-        self.lbl_phonetic = self._create_label(
-            phonetic_frame,
-            font_key="phonetic",
-            fg_key="text_phonetic"
-        )
-        self.lbl_phonetic.pack(side="left", padx=5)
-
-        self.btn_audio_us = self._create_audio_button(phonetic_frame, "🔊 US", 0)
-        self.btn_audio_uk = self._create_audio_button(phonetic_frame, "🔊 UK", 1)
-
-    def _create_audio_button(self, parent, text: str, index: int) -> tk.Label:
-        """Создает кнопку воспроизведения аудио"""
-        btn = tk.Label(
-            parent,
-            text=text,
-            font=FONTS["audio_btn"],
-            bg=COLORS["button_bg"],
-            fg=COLORS["text_main"],
-            cursor="hand2",
-            padx=5,
-            pady=2
-        )
-        btn.pack(side="left", padx=2)
-        btn.bind("<Button-1>", lambda e: self.audio_manager.play_audio(index))
-        return btn
 
     def _create_translation_display(self):
         """Область отображения перевода"""
@@ -276,7 +238,7 @@ class MainWindow(tk.Tk):
         self.canvas_scroll.configure(yscrollcommand=self.scrollbar.update)
         self.canvas_scroll.pack(side="left", fill="both", expand=True)
 
-        # ИСПРАВЛЕНО: Используем локальные bind вместо bind_all
+        # Используем локальные bind вместо bind_all
         self.canvas_scroll.bind("<MouseWheel>", self._on_mousewheel)
         self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
 
@@ -379,7 +341,7 @@ class MainWindow(tk.Tk):
         )
         self.lbl_status.pack(side="right", padx=5)
 
-        # Кнопки-переключатели (используем новый ToggleButton класс)
+        # Кнопки-переключатели
         self.btn_toggle_sent = ToggleButton(
             status_bar,
             "Sentence",
@@ -396,7 +358,7 @@ class MainWindow(tk.Tk):
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-        # Кнопка очистки кэша (используем новый ActionButton класс)
+        # Кнопка очистки кэша
         self.btn_cache = ActionButton(
             status_bar,
             "Cache --",
@@ -542,22 +504,13 @@ class MainWindow(tk.Tk):
         """
         Обновление UI полными данными словаря.
 
-        Делегирует рендеринг DictRenderer и управляет состоянием audio/phonetics.
+        Делегирует рендеринг DictRenderer.
         После отрисовки принудительно обновляет scrollbar.
         """
-        # Очистка аудио состояния
-        self.audio_manager.clear_audio_urls()
-
         # Рендеринг через DictRenderer
         if not full_data or not full_data.get("meanings"):
-            # Placeholder + очистка phonetics
             self.dict_renderer.render(None)
-            self.audio_manager.process_phonetics([])
         else:
-            # Обработка phonetics
-            self.audio_manager.process_phonetics(full_data.get("phonetics", []))
-
-            # Рендеринг meanings
             self.dict_renderer.render(full_data)
 
         # КРИТИЧНО: Показываем scrollbar ТОЛЬКО после полной загрузки данных
@@ -657,9 +610,7 @@ class MainWindow(tk.Tk):
             bg=COLORS["bg"]
         )
 
-        # Очистка через менеджеры
-        self.audio_manager.clear_audio_urls()
-        self.audio_manager.process_phonetics([])  # Очистка phonetics UI
+        # Очистка через менеджер
         self.dict_renderer.clear()
 
         self.sources = {"trans": "...", "img": "..."}
@@ -755,7 +706,7 @@ class MainWindow(tk.Tk):
         if not self._popup_was_open_before_click:
             x = self.winfo_x() + self.winfo_width() + 10
             y = self.winfo_y()
-            self.popup.show_animated(x, y)  # ИЗМЕНЕНО: используем show_animated
+            self.popup.show_animated(x, y)
 
         # ВСЕГДА обновляем содержимое popup (значение слайдера изменилось при клике)
         self.after(10, self._update_popup_if_visible)
@@ -800,7 +751,7 @@ class MainWindow(tk.Tk):
         # Закрываем popup с анимацией только если он был открыт ДО клика И не было движения
         if self._popup_was_open_before_click and not self._slider_was_moved:
             if self.popup and self.popup.winfo_viewable():
-                self.popup.close_animated()  # ИЗМЕНЕНО: используем close_animated
+                self.popup.close_animated()
 
         # Сбрасываем флаги для следующего взаимодействия
         self._slider_was_moved = False
