@@ -11,7 +11,6 @@ from config import VOCAB_FILE
 
 # ===== КОНСТАНТЫ =====
 VOCAB_SIZE = 20000  # Размер загружаемого словаря (топ-N слов)
-TOP_WORDS_NO_LEMMA = 1000  # Топ-N слов защищены от лемматизации (предотвращает "this" → "thi")
 VOCAB_LIST_URL = "https://raw.githubusercontent.com/first20hours/google-10000-english/master/20k.txt"
 FALLBACK_WORDS = "the\nof\nand\na\nto\nin"  # Минимальный словарь при отсутствии интернета
 
@@ -99,18 +98,21 @@ def is_word_too_simple(word: str, current_level: int) -> tuple[bool, str]:
     """
     Определяет, является ли слово "слишком простым" для текущего уровня.
 
+    Очищает слово: оставляет только английские буквы и приводит к lowercase.
+    Лемматизация НЕ применяется.
+
     Args:
         word: Исходное слово (может быть в любой форме)
         current_level: Уровень пользователя из слайдера (0-100)
 
     Returns:
-        (is_too_simple, lemmatized_word):
+        (is_too_simple, cleaned_word):
             - is_too_simple: True если слово нужно скрыть
-            - lemmatized_word: Лемматизированная форма слова
+            - cleaned_word: Очищенное слово (только английские буквы, lowercase)
 
     Examples:
         >>> is_word_too_simple("working", 10)
-        (False, "work")  # Ранг "work" > 2000 → показываем
+        (False, "working")  # Ранг "working" > 2000 → показываем
 
         >>> is_word_too_simple("the", 10)
         (True, "the")  # Ранг "the" = 1 → прячем
@@ -121,16 +123,16 @@ def is_word_too_simple(word: str, current_level: int) -> tuple[bool, str]:
         При уровне 50:  cutoff = 10000 → игнорируем топ-10K
         При уровне 100: cutoff = 20000 → игнорируем весь словарь
     """
-    from network import lemmatize_word_safe
+    # Очищаем слово: только английские буквы, lowercase
+    cleaned = ''.join(c for c in word if c.isalpha() and ord(c) < 128)
+    word_lower = cleaned.lower()
 
-    lemma = lemmatize_word_safe(word)
-    rank = WORD_RANKS.get(lemma, 99999)
+    rank = WORD_RANKS.get(word_lower, 99999)
 
     # Динамический расчёт границы на основе размера словаря
-    # VOCAB_SIZE = 20000, поэтому level=100 даёт cutoff=20000
     cutoff = int(current_level * VOCAB_SIZE / 100)
 
-    return rank < cutoff, lemma
+    return rank < cutoff, word_lower
 
 
 def get_word_range(cutoff: int, before: int = 500, after: int = 500) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
