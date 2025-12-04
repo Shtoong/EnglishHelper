@@ -87,16 +87,16 @@ class WordProcessor:
         vocab_level = int(self.main_window.vocab_var.get())
 
         # Проверяем не слишком ли простое слово (если не force)
-        too_simple, lemmatized = is_word_too_simple(word, vocab_level)
+        too_simple, cleaned_word = is_word_too_simple(word, vocab_level)
 
         if too_simple and not force:
             return  # Игнорируем простые слова (только если не force)
 
         # Сбрасываем UI для нового слова
-        self.main_window.after(0, lambda: self.main_window.reset_ui(lemmatized))
+        self.main_window.after(0, lambda: self.main_window.reset_ui(cleaned_word))
 
         # Быстрая проверка кэша перевода
-        cached_translation = check_cache_only(lemmatized)
+        cached_translation = check_cache_only(cleaned_word)
 
         if cached_translation:
             # Есть в кэше → немедленное отображение
@@ -108,20 +108,20 @@ class WordProcessor:
             # Нет в кэше → запускаем загрузку
             threading.Thread(
                 target=self._worker_translation,
-                args=(lemmatized,),
+                args=(cleaned_word,),
                 daemon=True
             ).start()
 
         # Параллельные загрузки изображения и словарных данных
         threading.Thread(
             target=self._worker_image,
-            args=(lemmatized,),
+            args=(cleaned_word,),
             daemon=True
         ).start()
 
         threading.Thread(
             target=self._worker_full_dictionary,
-            args=(lemmatized,),
+            args=(cleaned_word,),
             daemon=True
         ).start()
 
@@ -130,7 +130,7 @@ class WordProcessor:
         Worker для загрузки перевода слова.
 
         Args:
-            word: Лемматизированное слово
+            word: Очищенное слово
         """
         result = fetch_word_translation(word)
 
@@ -148,7 +148,7 @@ class WordProcessor:
         Worker для загрузки изображения.
 
         Args:
-            word: Лемматизированное слово
+            word: Очищенное слово
         """
         image_path, source = fetch_image(word)
 
@@ -163,7 +163,7 @@ class WordProcessor:
         Worker для загрузки полных словарных данных + автопроизношение.
 
         Args:
-            word: Лемматизированное слово
+            word: Очищенное слово
         """
         # Проверяем кэш
         full_data = load_full_dictionary_data(word)
