@@ -1,8 +1,10 @@
+#lemminflect
+#pyinstaller
+#pyttsx3
+#pyperclip
+
+text
 requests
-pillow
 keyboard
-lemminflect
-pyinstaller
-pyttsx3
-playsound==1.2.2
-pyperclip
+Pillow
+playsound
