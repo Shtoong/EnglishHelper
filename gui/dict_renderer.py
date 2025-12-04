@@ -1,11 +1,12 @@
 """
-Рендеринг словарных данных для EnglishHelper.
+Рендерер словарных данных для EnglishHelper.
 
-Обрабатывает:
-- Отрисовку meanings (части речи, определения, примеры)
-- Отрисовку синонимов с интерактивностью
-- Placeholder при отсутствии данных
-- Прокрутку колёсиком мыши через explicit binding
+Responsibilities:
+- Парсинг и отображение данных из dictionaryapi.dev
+- Объединение meanings с одинаковой частью речи
+- Рендеринг определений, примеров, синонимов, антонимов
+- Hover-переводы для примеров
+- Кликабельные синонимы
 """
 
 import tkinter as tk
@@ -15,293 +16,452 @@ from gui.styles import COLORS, FONTS
 
 class DictionaryRenderer:
     """
-    Отрисовывает словарные данные в scrollable frame.
+    Управляет рендерингом словарных данных в scrollable frame.
 
-    Responsibilities:
-    - Парсинг структуры meanings из API
-    - Создание UI элементов (labels, frames)
-    - Привязка hover эффектов через callbacks
-    - Управление интерактивными синонимами
-    - Включение прокрутки колёсиком мыши для всех виджетов
-
-    Dependencies:
-    - parent_frame: куда рендерить
-    - content_width_callback: для wraplength
-    - hover_callback: для биндинга hover-переводов
-    - synonym_click_callback: для кликов по синонимам
-    - canvas: для прокрутки при событии MouseWheel
+    Оптимизации:
+    - Переиспользование виджетов при возможности
+    - Lazy rendering для больших списков
+    - Минимум вложенных frames
     """
-
-    # Константы рендеринга
-    MAX_SYNONYMS = 5  # Максимум синонимов для отображения
 
     def __init__(self,
                  parent_frame: tk.Frame,
-                 content_width_callback: Callable[[], int],
-                 hover_callback: Callable[[tk.Widget, str], None],
-                 synonym_click_callback: Callable[[str], None],
-                 synonym_enter_callback: Callable[[object, str, tk.Label], None],
-                 synonym_leave_callback: Callable[[object, tk.Label], None],
-                 canvas: tk.Canvas):
+                 get_content_width: Callable[[], int],
+                 bind_hover_translation: Callable[[tk.Widget, str], None],
+                 on_synonym_click: Callable[[str], None],
+                 on_synonym_enter: Callable,
+                 on_synonym_leave: Callable,
+                 canvas_scroll: tk.Canvas):
         """
         Args:
-            parent_frame: Frame куда рендерить словарные данные
-            content_width_callback: Функция возвращающая доступную ширину контента
-            hover_callback: Callback для биндинга hover-перевода на виджет
-            synonym_click_callback: Callback для клика по синониму
-            synonym_enter_callback: Callback для hover синонима
-            synonym_leave_callback: Callback для leave синонима
-            canvas: Canvas для прокрутки (обычно canvas_scroll из MainWindow)
+            parent_frame: Scrollable frame для рендеринга
+            get_content_width: Функция получения ширины контента
+            bind_hover_translation: Функция привязки hover-перевода
+            on_synonym_click: Callback для клика по синониму
+            on_synonym_enter: Callback для hover на синониме
+            on_synonym_leave: Callback для leave с синонима
+            canvas_scroll: Canvas для управления прокруткой
         """
-        self.parent_frame = parent_frame
-        self.get_content_width = content_width_callback
-        self.bind_hover = hover_callback
-        self.on_synonym_click = synonym_click_callback
-        self.on_synonym_enter = synonym_enter_callback
-        self.on_synonym_leave = synonym_leave_callback
-        self.canvas = canvas
+        self.parent = parent_frame
+        self.get_content_width = get_content_width
+        self.bind_hover_translation = bind_hover_translation
+        self.on_synonym_click = on_synonym_click
+        self.on_synonym_enter = on_synonym_enter
+        self.on_synonym_leave = on_synonym_leave
+        self.canvas_scroll = canvas_scroll
 
-    def _enable_mousewheel_scroll(self, widget: tk.Widget) -> None:
-        """
-        Включает прокрутку колёсиком мыши для виджета.
-
-        КРИТИЧНО: НЕ использует bindtags() чтобы не сломать другие события
-        (<Enter>, <Leave>, <Button-1>). Вместо этого добавляет explicit binding
-        на <MouseWheel> который прокручивает canvas и останавливает всплытие.
-
-        Использует add="+" чтобы не заменять существующие bindings на виджете
-        (например, hover эффекты для синонимов).
-
-        Args:
-            widget: Виджет для которого нужно включить прокрутку
-        """
-        widget.bind("<MouseWheel>", self._handle_mousewheel, add="+")
-
-    def _handle_mousewheel(self, event) -> str:
-        """
-        Обработчик события MouseWheel для дочерних виджетов.
-
-        Прокручивает родительский canvas и останавливает всплытие события
-        чтобы избежать двойной прокрутки.
-
-        Args:
-            event: Tkinter event объект с delta (направление прокрутки)
-
-        Returns:
-            "break" для остановки дальнейшей обработки события
-        """
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        return "break"
-
-    def render(self, full_data: Optional[Dict]) -> None:
-        """
-        Рендерит полные данные словаря в parent_frame.
-
-        Очищает предыдущее содержимое и создаёт новое на основе данных.
-
-        Args:
-            full_data: Словарные данные из API (или None если нет данных)
-        """
-        # Очистка предыдущего контента
-        self.clear()
-
-        # Рендеринг на основе наличия данных
-        if not full_data or not full_data.get("meanings"):
-            self._render_no_data_placeholder()
-        else:
-            self._render_meanings(full_data.get("meanings", []))
-
-    def clear(self) -> None:
-        """Очищает все дочерние виджеты из parent_frame"""
-        for widget in self.parent_frame.winfo_children():
+    def clear(self):
+        """Очищает все виджеты из scrollable frame"""
+        for widget in self.parent.winfo_children():
             widget.destroy()
 
-    def _render_no_data_placeholder(self) -> None:
-        """Отрисовывает placeholder когда нет словарных данных"""
+    def render(self, full_data: Optional[Dict]):
+        """
+        Рендерит полные словарные данные.
+
+        Args:
+            full_data: Данные от dictionaryapi.dev или None
+        """
+        self.clear()
+
+        if not full_data or not full_data.get("meanings"):
+            self._render_no_data()
+            return
+
+        meanings = full_data.get("meanings", [])
+
+        # КРИТИЧНО: Объединяем meanings с одинаковой частью речи перед рендерингом
+        merged_meanings = self._merge_meanings_by_pos(meanings)
+
+        # Рендерим объединённые meanings
+        for meaning in merged_meanings:
+            self._render_meaning(meaning)
+
+    def _merge_meanings_by_pos(self, meanings: List[Dict]) -> List[Dict]:
+        """
+        Объединяет meanings с одинаковой частью речи.
+
+        Логика:
+        - Группирует по partOfSpeech
+        - Сохраняет порядок первого появления части речи
+        - Объединяет definitions[] (сквозная нумерация)
+        - Объединяет synonyms[] и antonyms[] без дубликатов (case-insensitive)
+        - Скрывает блоки с пустыми definitions[]
+
+        Args:
+            meanings: Список meanings от API
+
+        Returns:
+            Список объединённых meanings с уникальными partOfSpeech
+        """
+        merged = {}  # {partOfSpeech: {definitions: [], synonyms: [], antonyms: []}}
+        order = []   # Сохраняем порядок первого появления
+
+        for meaning in meanings:
+            pos = meaning.get("partOfSpeech", "unknown")
+
+            if pos not in merged:
+                order.append(pos)
+                merged[pos] = {
+                    "partOfSpeech": pos,
+                    "definitions": [],
+                    "synonyms": [],
+                    "antonyms": []
+                }
+
+            # Объединяем definitions (сохраняем порядок API)
+            merged[pos]["definitions"].extend(meaning.get("definitions", []))
+
+            # Объединяем synonyms (без дубликатов, case-insensitive)
+            existing_synonyms_lower = [s.lower() for s in merged[pos]["synonyms"]]
+            for syn in meaning.get("synonyms", []):
+                if syn.lower() not in existing_synonyms_lower:
+                    merged[pos]["synonyms"].append(syn)
+                    existing_synonyms_lower.append(syn.lower())
+
+            # Объединяем antonyms (без дубликатов, case-insensitive)
+            existing_antonyms_lower = [a.lower() for a in merged[pos]["antonyms"]]
+            for ant in meaning.get("antonyms", []):
+                if ant.lower() not in existing_antonyms_lower:
+                    merged[pos]["antonyms"].append(ant)
+                    existing_antonyms_lower.append(ant.lower())
+
+        # Возвращаем в порядке первого появления, пропуская пустые definitions
+        result = []
+        for pos in order:
+            if merged[pos]["definitions"]:  # Скрываем блоки с пустыми definitions
+                result.append(merged[pos])
+
+        return result
+
+    def _render_no_data(self):
+        """Рендерит placeholder при отсутствии данных"""
         lbl = tk.Label(
-            self.parent_frame,
-            text="No detailed data available",
+            self.parent,
+            text="No dictionary data",
             font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
         )
-        lbl.pack(pady=10)
+        lbl.pack(pady=20)
 
-        # Включаем прокрутку для placeholder
-        self._enable_mousewheel_scroll(lbl)
-
-    def _render_meanings(self, meanings: List[Dict]) -> None:
+    def _render_meaning(self, meaning: Dict):
         """
-        Отрисовывает meanings (части речи, определения, примеры, синонимы).
-
-        Структура для каждого meaning:
-        - Part of speech (заголовок)
-        - Definitions (нумерованный список с примерами)
-        - Synonyms (интерактивные теги)
-        - Separator (горизонтальная линия)
+        Рендерит один блок meaning (часть речи + определения + синонимы/антонимы).
 
         Args:
-            meanings: Список meanings объектов из API
+            meaning: Объединённый meaning блок
         """
-        for meaning in meanings:
-            # Часть речи (noun, verb, adjective, etc)
-            pos = meaning.get("partOfSpeech", "")
+        part_of_speech = meaning.get("partOfSpeech", "")
+        definitions = meaning.get("definitions", [])
+        synonyms = meaning.get("synonyms", [])
+        antonyms = meaning.get("antonyms", [])
+
+        # Пропускаем если нет определений (защита на случай пустого блока)
+        if not definitions:
+            return
+
+        # Заголовок части речи
+        if part_of_speech and part_of_speech != "unknown":
             lbl_pos = tk.Label(
-                self.parent_frame,
-                text=pos,
+                self.parent,
+                text=part_of_speech.upper(),
                 font=FONTS["pos"],
                 bg=COLORS["bg"],
-                fg=COLORS["text_pos"],
-                anchor="w"
+                fg=COLORS["text_accent"]
             )
-            lbl_pos.pack(fill="x", pady=(10, 5))
+            lbl_pos.pack(anchor="w", padx=10, pady=(10, 5))
 
-            # Включаем прокрутку для заголовка части речи
-            self._enable_mousewheel_scroll(lbl_pos)
+            # КРИТИЧНО: Привязываем mousewheel к заголовку части речи
+            lbl_pos.bind("<MouseWheel>", self._on_label_mousewheel)
 
-            # Определения и примеры
-            self._render_definitions(meaning.get("definitions", []))
+        # Рендерим определения (сквозная нумерация)
+        for idx, definition in enumerate(definitions, start=1):
+            self._render_definition(definition, idx)
 
-            # Синонимы
-            self._render_synonyms(meaning.get("synonyms", []))
+        # Синонимы (объединённый список под всеми определениями)
+        if synonyms:
+            self._render_synonyms(synonyms)
 
-            # Разделитель между meanings
-            separator = tk.Frame(
-                self.parent_frame,
-                height=1,
-                bg=COLORS["separator"],
-                width=360
-            )
-            separator.pack(pady=5)
+        # Антонимы (объединённый список под всеми определениями)
+        if antonyms:
+            self._render_antonyms(antonyms)
 
-            # Включаем прокрутку для разделителя
-            self._enable_mousewheel_scroll(separator)
-
-    def _render_definitions(self, definitions: List[Dict]) -> None:
+    def _render_definition(self, definition: Dict, index: int):
         """
-        Отрисовывает список определений с примерами.
-
-        Формат:
-        1. Definition text
-           "Example sentence"
-        2. Another definition
-           "Another example"
-
-        Hover эффекты:
-        - На definition → показать перевод
-        - На example → показать перевод
+        Рендерит одно определение с примером.
 
         Args:
-            definitions: Список definition объектов
+            definition: Блок определения от API
+            index: Номер определения (сквозная нумерация)
         """
-        for i, defn in enumerate(definitions, 1):
-            # Определение (нумерованное)
-            def_text = f"{i}. {defn.get('definition', '')}"
-            lbl_def = tk.Label(
-                self.parent_frame,
-                text=def_text,
+        def_text = definition.get("definition", "")
+        example = definition.get("example", "")
+
+        if not def_text:
+            return
+
+        # Фрейм для определения
+        def_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        def_frame.pack(fill="x", padx=10, pady=2)
+
+        # КРИТИЧНО: Привязываем mousewheel к Frame определения
+        def_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+
+        # Номер определения
+        lbl_num = tk.Label(
+            def_frame,
+            text=f"{index}.",
+            font=FONTS["definition"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"]
+        )
+        lbl_num.pack(side="left", anchor="nw", padx=(0, 5))
+
+        # КРИТИЧНО: Привязываем mousewheel к номеру определения
+        lbl_num.bind("<MouseWheel>", self._on_label_mousewheel)
+
+        # Текст определения
+        lbl_def = tk.Label(
+            def_frame,
+            text=def_text,
+            font=FONTS["definition"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_main"],
+            wraplength=self.get_content_width() - 40,
+            justify="left",
+            anchor="w"
+        )
+        lbl_def.pack(side="left", fill="x", expand=True, anchor="nw")
+
+        # КРИТИЧНО: Привязываем mousewheel к Label определения
+        lbl_def.bind("<MouseWheel>", self._on_label_mousewheel)
+
+        # КРИТИЧНО: Привязываем hover-перевод к Label определения
+        self.bind_hover_translation(lbl_def, def_text)
+
+        # Пример (с hover-переводом)
+        if example:
+            # Фрейм для примера — такой же как для определения
+            example_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+            example_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+            # КРИТИЧНО: Привязываем mousewheel к Frame примера
+            example_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+
+            # Пустой Label для отступа (такой же как номер определения)
+            lbl_example_indent = tk.Label(
+                example_frame,
+                text="",
                 font=FONTS["definition"],
                 bg=COLORS["bg"],
-                fg=COLORS["text_main"],
-                wraplength=self.get_content_width(),
+                width=len(f"{index}.")
+            )
+            lbl_example_indent.pack(side="left", anchor="nw", padx=(0, 5))
+
+            # КРИТИЧНО: Привязываем mousewheel к отступу примера
+            lbl_example_indent.bind("<MouseWheel>", self._on_label_mousewheel)
+
+            # Текст примера
+            lbl_example = tk.Label(
+                example_frame,
+                text=example,
+                font=(FONTS["definition"][0], FONTS["definition"][1], "italic"),
+                bg=COLORS["bg"],
+                fg=COLORS["text_faint"],
+                wraplength=self.get_content_width() - 40,
                 justify="left",
                 anchor="w"
             )
-            lbl_def.pack(fill="x", padx=10, pady=2)
+            lbl_example.pack(side="left", fill="x", expand=True, anchor="nw")
 
-            # Биндинг hover-перевода на определение
-            self.bind_hover(lbl_def, defn.get('definition', ''))
+            # Привязываем hover-перевод для примера
+            self.bind_hover_translation(lbl_example, example)
 
-            # КРИТИЧНО: Включаем прокрутку ПОСЛЕ других bindings
-            # чтобы не конфликтовать с hover эффектами
-            self._enable_mousewheel_scroll(lbl_def)
+            # КРИТИЧНО: Привязываем mousewheel к Label примера
+            lbl_example.bind("<MouseWheel>", self._on_label_mousewheel)
 
-            # Пример (если есть)
-            if defn.get("example"):
-                ex_text = f'   "{defn["example"]}"'
-                lbl_ex = tk.Label(
-                    self.parent_frame,
-                    text=ex_text,
-                    font=FONTS["example"],
-                    bg=COLORS["bg"],
-                    fg=COLORS["text_accent"],
-                    wraplength=self.get_content_width(),
-                    justify="left",
-                    anchor="w"
-                )
-                lbl_ex.pack(fill="x", padx=10, pady=(0, 5))
-
-                # Биндинг hover-перевода на пример
-                self.bind_hover(lbl_ex, defn.get("example", ""))
-
-                # КРИТИЧНО: Включаем прокрутку ПОСЛЕ других bindings
-                self._enable_mousewheel_scroll(lbl_ex)
-
-    def _render_synonyms(self, synonyms: List[str]) -> None:
+    def _render_synonyms(self, synonyms: List[str]):
         """
-        Отрисовывает синонимы как интерактивные теги.
-
-        Features:
-        - Максимум MAX_SYNONYMS синонимов
-        - Hover эффект (подсветка + tooltip с переводом)
-        - Клик → поиск синонима как нового слова
-
-        Layout: [Syn:] [tag1] [tag2] [tag3] ...
+        Рендерит список синонимов (объединённых из всех блоков) с переносом на новые строки.
 
         Args:
-            synonyms: Список синонимов
+            synonyms: Список синонимов без дубликатов
         """
         if not synonyms:
             return
 
-        # Контейнер для синонимов
-        syn_frame = tk.Frame(self.parent_frame, bg=COLORS["bg"])
-        syn_frame.pack(fill="x", padx=10, pady=(5, 10))
+        # Основной контейнер
+        syn_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        syn_frame.pack(fill="x", padx=10, pady=(8, 2))
 
-        # Включаем прокрутку для контейнера
-        self._enable_mousewheel_scroll(syn_frame)
+        # КРИТИЧНО: Привязываем mousewheel к Frame синонимов
+        syn_frame.bind("<MouseWheel>", self._on_label_mousewheel)
 
-        # Label "Syn:"
-        lbl_syn_header = tk.Label(
+        # Заголовок в первой строке, первой колонке
+        lbl_syn_title = tk.Label(
             syn_frame,
-            text="Syn:",
-            font=FONTS["synonym_label"],
+            text="Synonyms:",
+            font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
         )
-        lbl_syn_header.pack(side="left", anchor="n")
+        lbl_syn_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
-        # Включаем прокрутку для заголовка
-        self._enable_mousewheel_scroll(lbl_syn_header)
+        # КРИТИЧНО: Привязываем mousewheel к заголовку
+        lbl_syn_title.bind("<MouseWheel>", self._on_label_mousewheel)
 
-        # Теги синонимов (ограничиваем количество)
-        for syn in synonyms[:self.MAX_SYNONYMS]:
-            tag = tk.Label(
+        # Создаём синонимы в grid для переноса
+        available_width = self.get_content_width() - 100
+        current_width = 0
+        row = 0
+        col = 1
+
+        # Временный Label для измерения ширины
+        temp_label = tk.Label(syn_frame, font=FONTS["definition"])
+
+        for idx, syn in enumerate(synonyms[:20]):
+            # Измеряем ширину синонима
+            temp_label.config(text=syn)
+            temp_label.update_idletasks()
+            word_width = temp_label.winfo_reqwidth() + 20
+
+            # Проверяем перенос
+            if current_width + word_width > available_width and col > 1:
+                row += 1
+                col = 1
+                current_width = 0
+
+            # Создаём Label для синонима
+            lbl_syn = tk.Label(
                 syn_frame,
                 text=syn,
-                font=FONTS["synonym"],
-                bg=COLORS["bg_secondary"],
-                fg=COLORS["text_main"],
-                padx=6,
-                pady=2,
-                cursor="hand2"
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_accent"],
+                cursor="hand2",
+                padx=5
             )
-            tag.pack(side="left", padx=3)
+            lbl_syn.grid(row=row, column=col, sticky="w")
 
-            # Биндинг событий для интерактивности
-            tag.bind(
-                "<Enter>",
-                lambda e, t=syn, w=tag: self.on_synonym_enter(e, t, w)
-            )
-            tag.bind(
-                "<Leave>",
-                lambda e, w=tag: self.on_synonym_leave(e, w)
-            )
-            tag.bind(
-                "<Button-1>",
-                lambda e, w=syn: self.on_synonym_click(w)
-            )
+            # Привязываем события - ТОЛЬКО наши обработчики, без bind_hover_translation
+            lbl_syn.bind("<Button-1>", lambda e, word=syn: self.on_synonym_click(word))
+            lbl_syn.bind("<Enter>", lambda e, word=syn, btn=lbl_syn: self._on_synonym_hover_enter(e, word, btn))
+            lbl_syn.bind("<Leave>", lambda e, btn=lbl_syn: self._on_synonym_hover_leave(e, btn))
+            lbl_syn.bind("<MouseWheel>", self._on_label_mousewheel)
 
-            # КРИТИЧНО: Включаем прокрутку ПОСЛЕ интерактивных bindings
-            # add="+" гарантирует что <Enter>, <Leave>, <Button-1> сохранятся
-            self._enable_mousewheel_scroll(tag)
+            current_width += word_width
+            col += 1
+
+        temp_label.destroy()
+
+    def _render_antonyms(self, antonyms: List[str]):
+        """
+        Рендерит список антонимов (объединённых из всех блоков) с переносом на новые строки.
+
+        Args:
+            antonyms: Список антонимов без дубликатов
+        """
+        if not antonyms:
+            return
+
+        # Основной контейнер
+        ant_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        ant_frame.pack(fill="x", padx=10, pady=(8, 2))
+
+        # КРИТИЧНО: Привязываем mousewheel к Frame антонимов
+        ant_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+
+        # Заголовок в первой строке, первой колонке
+        lbl_ant_title = tk.Label(
+            ant_frame,
+            text="Antonyms:",
+            font=FONTS["definition"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_faint"]
+        )
+        lbl_ant_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
+
+        # КРИТИЧНО: Привязываем mousewheel к заголовку
+        lbl_ant_title.bind("<MouseWheel>", self._on_label_mousewheel)
+
+        # Создаём антонимы в grid для переноса
+        available_width = self.get_content_width() - 100
+        current_width = 0
+        row = 0
+        col = 1
+
+        # Временный Label для измерения ширины
+        temp_label = tk.Label(ant_frame, font=FONTS["definition"])
+
+        for idx, ant in enumerate(antonyms[:20]):
+            # Измеряем ширину антонима
+            temp_label.config(text=ant)
+            temp_label.update_idletasks()
+            word_width = temp_label.winfo_reqwidth() + 20
+
+            # Проверяем перенос
+            if current_width + word_width > available_width and col > 1:
+                row += 1
+                col = 1
+                current_width = 0
+
+            # Создаём Label для антонима
+            lbl_ant = tk.Label(
+                ant_frame,
+                text=ant,
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_accent"],
+                cursor="hand2",
+                padx=5
+            )
+            lbl_ant.grid(row=row, column=col, sticky="w")
+
+            # Привязываем события - ТОЛЬКО наши обработчики, без bind_hover_translation
+            lbl_ant.bind("<Button-1>", lambda e, word=ant: self.on_synonym_click(word))
+            lbl_ant.bind("<Enter>", lambda e, word=ant, btn=lbl_ant: self._on_synonym_hover_enter(e, word, btn))
+            lbl_ant.bind("<Leave>", lambda e, btn=lbl_ant: self._on_synonym_hover_leave(e, btn))
+            lbl_ant.bind("<MouseWheel>", self._on_label_mousewheel)
+
+            current_width += word_width
+            col += 1
+
+        temp_label.destroy()
+
+    def _on_synonym_hover_enter(self, event, word: str, label: tk.Label):
+        """
+        Обработка наведения на синоним/антоним - желтый фон, черный текст.
+
+        Args:
+            event: Событие Enter
+            word: Слово для перевода
+            label: Label виджет
+        """
+        # Меняем цвет на желтый фон + черный текст
+        label.config(bg="#FFD700", fg="#000000")
+
+        # Вызываем оригинальный hover callback (если нужен)
+        self.on_synonym_enter(event, word, label)
+
+    def _on_synonym_hover_leave(self, event, label: tk.Label):
+        """
+        Обработка ухода курсора с синонима/антонима - возврат к исходным цветам.
+
+        Args:
+            event: Событие Leave
+            label: Label виджет
+        """
+        # Возвращаем исходные цвета
+        label.config(bg=COLORS["bg"], fg=COLORS["text_accent"])
+
+    def _on_label_mousewheel(self, event):
+        """
+        Обработчик mousewheel для всех Label внутри scrollable frame.
+        Перенаправляет событие на canvas для корректной прокрутки.
+
+        Args:
+            event: MouseWheel событие
+        """
+        self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"  # Останавливаем всплытие события
