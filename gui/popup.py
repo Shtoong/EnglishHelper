@@ -78,6 +78,9 @@ class VocabPopup(tk.Toplevel):
         # Скрываем окно до первого вызова
         self.withdraw()
 
+        # КРИТИЧНО: Убираем из панели задач ПОСЛЕ создания окна
+        self.after(10, self._remove_taskbar_button)
+
     def _create_top_bar(self):
         """Создает верхнюю панель с заголовком и крестиком"""
         top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
@@ -105,6 +108,44 @@ class VocabPopup(tk.Toplevel):
         btn_close.pack(side="right", padx=10)
         btn_close.bind("<Button-1>", lambda e: self.close())
 
+    def _remove_taskbar_button(self):
+        """Убирает кнопку окна из панели задач Windows"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # Получаем HWND окна
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+
+            # Получаем текущий extended style
+            GWL_EXSTYLE = -20
+            get_window_long = ctypes.windll.user32.GetWindowLongW
+            set_window_long = ctypes.windll.user32.SetWindowLongW
+
+            style = get_window_long(hwnd, GWL_EXSTYLE)
+
+            # Добавляем WS_EX_TOOLWINDOW (убирает из панели задач)
+            # Убираем WS_EX_APPWINDOW (если есть)
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+
+            new_style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            set_window_long(hwnd, GWL_EXSTYLE, new_style)
+
+            # Принудительное обновление окна
+            SWP_FRAMECHANGED = 0x0020
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+            )
+        except Exception:
+            # Игнорируем ошибки на не-Windows платформах
+            pass
+
     def _create_scrollable_content(self):
         """Создает прокручиваемую область со списком слов"""
         scroll_container = tk.Frame(self, bg=COLORS["bg"])
@@ -123,7 +164,6 @@ class VocabPopup(tk.Toplevel):
 
         # Frame для списка слов
         self.scrollable_frame = tk.Frame(self.canvas, bg=COLORS["bg"])
-
         self.scrollable_frame.bind(
             "<Configure>",
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -249,16 +289,15 @@ class VocabPopup(tk.Toplevel):
     def _create_word_label(self, word: str, rank: int, color: str):
         """
         Создает кликабельный label для слова.
-
-        Формат: "xxxxx   word" с выравниванием числа вправо.
+        Формат: "xxxxx word" с выравниванием числа вправо.
 
         Args:
             word: Слово для отображения
             rank: Ранг слова в словаре (0-based)
             color: Цвет текста
         """
-        # Формат: "  453   hello" с выравниванием номера вправо на 5 символов
-        display_text = f"{rank + 1:>5}   {word}"
+        # Формат: "  453 hello" с выравниванием номера вправо на 5 символов
+        display_text = f"{rank + 1:>5} {word}"
 
         lbl = tk.Label(
             self.scrollable_frame,
@@ -272,7 +311,6 @@ class VocabPopup(tk.Toplevel):
         lbl.pack(fill="x", padx=10, pady=1)
 
         # КРИТИЧНО: Используем default argument для захвата значений word и color
-
         # Клик → поиск слова (САМЫМ ПЕРВЫМ, чтобы не конфликтовать с hover)
         lbl.bind("<Button-1>", lambda e, w=word: self._on_word_click(w))
 
@@ -296,7 +334,6 @@ class VocabPopup(tk.Toplevel):
     def _scroll_to_separator(self):
         """
         Прокручивает canvas так, чтобы separator был по центру окна.
-
         КРИТИЧНО: Вызывается через after_idle после рендеринга,
         т.к. требуется готовая геометрия всех виджетов.
         """
@@ -314,7 +351,6 @@ class VocabPopup(tk.Toplevel):
         scroll_region = self.canvas.cget("scrollregion")
         if not scroll_region:
             return
-
         total_height = float(scroll_region.split()[3])
 
         # Вычисляем целевую позицию (separator по центру)
@@ -327,7 +363,6 @@ class VocabPopup(tk.Toplevel):
     def sync_height_with_main(self):
         """
         Синхронизирует высоту popup с главным окном.
-
         Вызывается при открытии popup.
         """
         main_height = self.main_window.winfo_height()
@@ -360,6 +395,9 @@ class VocabPopup(tk.Toplevel):
         # Показываем окно (невидимое)
         self.deiconify()
 
+        # КРИТИЧНО: Убираем из панели задач после deiconify
+        self.after(10, self._remove_taskbar_button)
+
         # Запускаем анимацию появления
         self._is_animating = True
         self._animate_alpha(self.FADE_IN_START, 1.0, self._on_fade_in_complete)
@@ -367,7 +405,6 @@ class VocabPopup(tk.Toplevel):
     def close_animated(self):
         """
         Закрывает popup с плавной анимацией fade-out.
-
         Используется при клике на ползунок когда popup уже открыт.
         """
         # Если уже идет анимация - игнорируем
@@ -411,7 +448,6 @@ class VocabPopup(tk.Toplevel):
         def step():
             current_step[0] += 1
             new_alpha = start_alpha + (delta * current_step[0])
-
             # Ограничиваем значение в пределах [0.0, 1.0]
             new_alpha = max(0.0, min(1.0, new_alpha))
 
@@ -438,7 +474,6 @@ class VocabPopup(tk.Toplevel):
     def show_at_position(self, x: int, y: int):
         """
         Показывает popup БЕЗ анимации (для обратной совместимости).
-
         Для показа с анимацией используйте show_animated().
 
         Args:
@@ -456,10 +491,12 @@ class VocabPopup(tk.Toplevel):
         self.attributes("-alpha", 1.0)
         self.deiconify()
 
+        # КРИТИЧНО: Убираем из панели задач после deiconify
+        self.after(10, self._remove_taskbar_button)
+
     def close(self):
         """
         Закрывает popup БЕЗ анимации (для обратной совместимости).
-
         Используется при клике на крестик.
         Для закрытия с анимацией используйте close_animated().
         """

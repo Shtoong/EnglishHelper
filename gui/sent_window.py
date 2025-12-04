@@ -103,7 +103,7 @@ class SentenceWindow(tk.Toplevel):
 
         # Привязываем drag для перемещения окна
         for widget in [self, self.content_frame, self.lbl_eng, self.lbl_rus]:
-            widget.bind("<Button-1>", self.start_move)
+            widget.bind("<ButtonPress-1>", self.start_move)
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<ButtonRelease-1>", self.stop_move)
 
@@ -113,6 +113,9 @@ class SentenceWindow(tk.Toplevel):
         # Применяем начальное состояние видимости
         if not cfg.get_bool("USER", "ShowSentenceWindow", True):
             self.withdraw()
+
+        # КРИТИЧНО: Убираем из панели задач ПОСЛЕ создания окна
+        self.after(10, self._remove_taskbar_button)
 
     def _create_top_bar(self):
         """Создает верхнюю панель с кнопкой закрытия"""
@@ -132,9 +135,47 @@ class SentenceWindow(tk.Toplevel):
         btn_close.bind("<Button-1>", lambda e: self.close_window())
 
         # Привязываем drag и для top_bar
-        top_bar.bind("<Button-1>", self.start_move)
+        top_bar.bind("<ButtonPress-1>", self.start_move)
         top_bar.bind("<B1-Motion>", self.do_move)
         top_bar.bind("<ButtonRelease-1>", self.stop_move)
+
+    def _remove_taskbar_button(self):
+        """Убирает кнопку окна из панели задач Windows"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # Получаем HWND окна
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+
+            # Получаем текущий extended style
+            GWL_EXSTYLE = -20
+            get_window_long = ctypes.windll.user32.GetWindowLongW
+            set_window_long = ctypes.windll.user32.SetWindowLongW
+
+            style = get_window_long(hwnd, GWL_EXSTYLE)
+
+            # Добавляем WS_EX_TOOLWINDOW (убирает из панели задач)
+            # Убираем WS_EX_APPWINDOW (если есть)
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+
+            new_style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            set_window_long(hwnd, GWL_EXSTYLE, new_style)
+
+            # Принудительное обновление окна
+            SWP_FRAMECHANGED = 0x0020
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+            )
+        except Exception:
+            # Игнорируем ошибки на не-Windows платформах
+            pass
 
     def start_move(self, event):
         """Начало перемещения окна"""
@@ -155,10 +196,8 @@ class SentenceWindow(tk.Toplevel):
         """Изменение размера окна"""
         current_x = self.winfo_x()
         current_y = self.winfo_y()
-
         new_w = max(self.MIN_WINDOW_WIDTH, self.winfo_width() + dx)
         new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
-
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
         self.after_idle(lambda: self._update_wraplength(new_w))
 
@@ -176,7 +215,6 @@ class SentenceWindow(tk.Toplevel):
     def close_window(self):
         """
         Закрывает окно с анимацией fade-out и синхронизацией состояния.
-
         КРИТИЧНО: Использует withdraw() вместо destroy() для сохранения
         возможности повторного открытия через toggle кнопку.
         """
@@ -211,7 +249,6 @@ class SentenceWindow(tk.Toplevel):
     def show_animated(self):
         """
         Показывает окно с анимацией fade-in.
-
         Вызывается из MainWindow при включении через toggle кнопку.
         """
         # Если уже идет анимация - игнорируем
@@ -226,6 +263,9 @@ class SentenceWindow(tk.Toplevel):
 
         # Показываем окно (невидимое)
         self.deiconify()
+
+        # КРИТИЧНО: Убираем из панели задач после deiconify
+        self.after(10, self._remove_taskbar_button)
 
         # Запускаем анимацию появления
         self._is_animating = True
@@ -254,7 +294,6 @@ class SentenceWindow(tk.Toplevel):
         def step():
             current_step[0] += 1
             new_alpha = start_alpha + (delta * current_step[0])
-
             # Ограничиваем значение в пределах [0.0, 1.0]
             new_alpha = max(0.0, min(1.0, new_alpha))
 
@@ -279,7 +318,6 @@ class SentenceWindow(tk.Toplevel):
     def show(self):
         """
         Показывает окно БЕЗ анимации (для обратной совместимости).
-
         Используется при инициализации приложения (_sync_initial_state).
         Для показа с анимацией используйте show_animated().
         """
@@ -287,10 +325,12 @@ class SentenceWindow(tk.Toplevel):
         self.attributes("-alpha", 1.0)
         self.deiconify()
 
+        # КРИТИЧНО: Убираем из панели задач после deiconify
+        self.after(10, self._remove_taskbar_button)
+
     def hide(self):
         """
         Скрывает окно БЕЗ анимации (для обратной совместимости).
-
         Для скрытия с анимацией используйте close_window().
         """
         cfg.set("USER", "SentWindowGeometry", self.geometry())
