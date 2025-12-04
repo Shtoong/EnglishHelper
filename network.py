@@ -11,20 +11,12 @@ from urllib.parse import quote
 from functools import lru_cache
 from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
-# ===== CONSTANTS =====
+# ===== КОНСТАНТЫ =====
 MIN_VALID_AUDIO_SIZE = 1500  # bytes, ~0.1s of MP3 audio
 MIN_IMAGE_DIMENSION = 100  # pixels, minimum for valid images
 IMAGE_THUMBNAIL_SIZE = 500  # Pexels/Wiki API parameter
 
 # ===== IMPORTS WITH GRACEFUL DEGRADATION =====
-try:
-    import lemminflect
-
-    LEMMATIZER_AVAILABLE = True
-except ImportError:
-    lemminflect = None
-    LEMMATIZER_AVAILABLE = False
-
 try:
     from playsound import playsound
 
@@ -34,67 +26,18 @@ except ImportError:
     PLAYSOUND_AVAILABLE = False
 
 
-# ===== LEMMATIZATION WITH VOCAB PROTECTION =====
-
-@lru_cache(maxsize=2048)
-def lemmatize_word_safe(word: str) -> str:
-    """
-    Приводит слово к лемме с защитой топ-1000 от искажений.
-
-    Защита критична для высокочастотных слов:
-    - "this" без защиты → "thi" (ошибка lemminflect)
-    - "bus" без защиты → "bu"
-
-    Args:
-        word: Исходное слово (любой регистр)
-
-    Returns:
-        Лемматизированное слово в lowercase
-
-    Note:
-        Использует глобальный WORD_RANKS из vocab.py для проверки топ-1000.
-        Функция должна вызываться ПОСЛЕ init_vocab().
-    """
-    word_lower = word.lower()
-
-    # Защита от circular import - импорт внутри функции
-    try:
-        from vocab import WORD_RANKS, TOP_WORDS_NO_LEMMA
-
-        # Защита топ-N слов от лемматизации
-        if word_lower in WORD_RANKS and WORD_RANKS[word_lower] < TOP_WORDS_NO_LEMMA:
-            return word_lower
-    except ImportError:
-        pass  # vocab еще не инициализирован - работаем без защиты
-
-    # Стандартная лемматизация
-    if not LEMMATIZER_AVAILABLE or lemminflect is None:
-        return word_lower
-
-    try:
-        if len(word_lower) < 2:
-            return word_lower
-
-        # Приоритет: VERB → NOUN
-        for pos in ('VERB', 'NOUN'):
-            lemmas = lemminflect.getLemma(word_lower, upos=pos)
-            if lemmas and lemmas[0] != word_lower:
-                return lemmas[0]
-
-        return word_lower
-
-    except (AttributeError, ValueError, TypeError):
-        return word_lower
-
+# ===== WORD CLEANING =====
 
 @lru_cache(maxsize=2048)
 def get_safe_filename(word: str) -> str:
     """
     Преобразует слово в безопасное имя файла.
+    Очищает слово: только английские буквы, lowercase, только alnum для файла.
     Кэшируется для избежания повторных вычислений.
     """
-    lemma = lemmatize_word_safe(word)
-    return "".join(c for c in lemma if c.isalnum())
+    cleaned = ''.join(c for c in word if c.isalpha() and ord(c) < 128)
+    word_lower = cleaned.lower()
+    return "".join(c for c in word_lower if c.isalnum())
 
 
 # ===== SESSION MANAGEMENT =====
@@ -222,22 +165,6 @@ def _cache_audio_async(url: str, cache_path: str):
         download_and_cache_audio(url, cache_path)
 
 
-def _cache_audio_from_phonetics(audio_url: str, word: str):
-    """Асинхронное кэширование аудио из phonetics данных"""
-    if not audio_url:
-        return
-
-    accent = "us" if "-us.mp3" in audio_url.lower() or "en-US" in audio_url else "uk"
-    cache_path = get_audio_cache_path(word, accent)
-
-    if not os.path.exists(cache_path):
-        threading.Thread(
-            target=download_and_cache_audio,
-            args=(audio_url, cache_path),
-            daemon=True
-        ).start()
-
-
 def streaming_play_and_cache(url: str, cache_path: str):
     """Потоковое воспроизведение с кэшированием"""
     if not PLAYSOUND_AVAILABLE:
@@ -342,14 +269,17 @@ def fetch_full_dictionary_data(word):
     Оптимизировано:
     - Проверяет кэш перед HTTP запросом
     - Google TTS кэшируется асинхронно без блокировки
+    - НЕ использует лемматизацию
+    - НЕ парсит phonetics и audio из dictionaryapi.dev
     """
     # Проверяем полный кэш перед запросом к API
     cached = load_full_dictionary_data(word)
     if cached and cached.get("meanings"):
         return cached
 
-    lemma = lemmatize_word_safe(word)
-    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{lemma}"
+    # Очищаем слово для запроса к API
+    cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{cleaned_word}"
 
     # Запускаем кэширование US audio в фоне (не блокируем)
     google_us_url = get_google_tts_url(word, "us")
@@ -368,59 +298,22 @@ def fetch_full_dictionary_data(word):
                 full_data = data_list[0]
 
                 # Получаем русский перевод
-                rus_trans = fetch_yandex_translation(lemma)
+                rus_trans = fetch_yandex_translation(cleaned_word)
                 if not rus_trans:
-                    rus_trans = fetch_google_translation(lemma)
+                    rus_trans = fetch_google_translation(cleaned_word)
 
                 if rus_trans:
                     full_data["rus"] = rus_trans
 
-                phonetics = full_data.get("phonetics", [])
+                # Оставляем только Google TTS как единственный источник аудио
+                # НЕ парсим phonetics из dictionaryapi.dev
+                full_data["phonetics"] = [{
+                    "audio": google_us_url,
+                    "sourceUrl": "",
+                    "license": {"name": "Google TTS", "url": ""}
+                }]
 
-                # Кэшируем audio из phonetics
-                for p in phonetics:
-                    audio_url = p.get("audio")
-                    if audio_url:
-                        _cache_audio_from_phonetics(audio_url, word)
-
-                # Оптимизированная проверка US/UK (один проход с early break)
-                has_us = False
-                has_uk = False
-
-                for p in phonetics:
-                    audio = p.get("audio", "")
-                    if not audio:
-                        continue
-
-                    audio_lower = audio.lower()
-                    if "-us.mp3" in audio_lower or "en-US" in audio:
-                        has_us = True
-                    if "-uk.mp3" in audio_lower or "en-GB" in audio:
-                        has_uk = True
-
-                    if has_us and has_uk:
-                        break
-
-                # Добавляем Google TTS как fallback
-                if not has_us:
-                    phonetics.append({
-                        "text": "",
-                        "audio": google_us_url,
-                        "sourceUrl": "",
-                        "license": {"name": "Google TTS", "url": ""}
-                    })
-
-                if not has_uk:
-                    uk_url = get_google_tts_url(word, "uk")
-                    phonetics.append({
-                        "text": "",
-                        "audio": uk_url,
-                        "sourceUrl": "",
-                        "license": {"name": "Google TTS", "url": ""}
-                    })
-
-                full_data["phonetics"] = phonetics
-                full_data["word"] = lemma
+                full_data["word"] = cleaned_word
                 save_full_dictionary_data(word, full_data)
 
                 return full_data
@@ -431,16 +324,15 @@ def fetch_full_dictionary_data(word):
     if cached:
         return cached
 
-    rus_trans = fetch_yandex_translation(lemma)
+    rus_trans = fetch_yandex_translation(cleaned_word)
     if not rus_trans:
-        rus_trans = fetch_google_translation(lemma)
+        rus_trans = fetch_google_translation(cleaned_word)
 
     if rus_trans:
         minimal_data = {
-            "word": lemma,
+            "word": cleaned_word,
             "rus": rus_trans,
             "phonetics": [{
-                "text": "",
                 "audio": google_us_url,
                 "sourceUrl": "",
                 "license": {"name": "Google TTS", "url": ""}
@@ -461,8 +353,8 @@ def fetch_yandex_translation(word):
     if not key:
         return None
 
-    lemma = lemmatize_word_safe(word)
-    url = f"https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key={key}&lang=en-ru&text={lemma}"
+    cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
+    url = f"https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key={key}&lang=en-ru&text={cleaned_word}"
     try:
         resp = session_google.get(url, timeout=3)
         if resp.status_code == 200:
@@ -480,7 +372,7 @@ def fetch_yandex_translation(word):
 
 def fetch_google_translation(word):
     """Получает перевод из Google Translate"""
-    lemma = lemmatize_word_safe(word)
+    cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
 
     try:
         url = "https://translate.googleapis.com/translate_a/single"
@@ -489,7 +381,7 @@ def fetch_google_translation(word):
             "sl": "en",
             "tl": "ru",
             "dt": "t",
-            "q": lemma
+            "q": cleaned_word
         }
         resp = session_google.get(url, params=params, timeout=5)
         if resp.status_code == 200:
@@ -513,12 +405,12 @@ def fetch_word_translation(word):
 
     google_trans = fetch_google_translation(word)
     if google_trans:
-        lemma = lemmatize_word_safe(word)
+        cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
         if full_data:
             full_data["rus"] = google_trans
             save_full_dictionary_data(word, full_data)
         else:
-            save_full_dictionary_data(word, {"rus": google_trans, "word": lemma})
+            save_full_dictionary_data(word, {"rus": google_trans, "word": cleaned_word})
         return {"rus": google_trans, "cached": False}
 
     return None
@@ -587,8 +479,8 @@ def fetch_pexels_image(word):
     if not key:
         return None
 
-    lemma = lemmatize_word_safe(word)
-    url = f"https://api.pexels.com/v1/search?query={lemma}&per_page=1"
+    cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
+    url = f"https://api.pexels.com/v1/search?query={cleaned_word}&per_page=1"
     session_pexels.headers.update({"Authorization": key})
 
     try:
@@ -609,8 +501,8 @@ def fetch_wiki_image(word):
     if is_image_not_found(word):
         return None
 
-    lemma = lemmatize_word_safe(word)
-    url = f"https://en.wikipedia.org/w/api.php?action=query&titles={lemma}&prop=pageimages&format=json&pithumbsize={IMAGE_THUMBNAIL_SIZE}"
+    cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
+    url = f"https://en.wikipedia.org/w/api.php?action=query&titles={cleaned_word}&prop=pageimages&format=json&pithumbsize={IMAGE_THUMBNAIL_SIZE}"
 
     blacklist = [
         "Commons-logo", "Disambig", "Ambox", "Wiki_letter",
