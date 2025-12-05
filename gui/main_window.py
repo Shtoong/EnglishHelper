@@ -484,7 +484,7 @@ class MainWindow(tk.Tk):
 
     def update_full_data_ui(self, full_data: Optional[Dict]):
         """Обновление UI полными данными словаря."""
-        if not full_data or not full_data.get("meanings"):
+        if not full_data:
             self.dict_renderer.render(None)
         else:
             self.dict_renderer.render(full_data)

@@ -13,10 +13,10 @@ from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
 
 # ===== КОНСТАНТЫ =====
 MIN_VALID_AUDIO_SIZE = 1500  # bytes, ~0.1s of MP3 audio
-MIN_IMAGE_DIMENSION = 100  # pixels, minimum for valid images
-IMAGE_THUMBNAIL_SIZE = 500  # Pexels/Wiki API parameter
+MIN_IMAGE_DIMENSION = 100  # pixels, минимум для валидных изображений
+IMAGE_THUMBNAIL_SIZE = 500  # Pexels/Wiki API параметр
 
-# ===== IMPORTS WITH GRACEFUL DEGRADATION =====
+# ===== ИМПОРТЫ С GRACEFUL DEGRADATION =====
 try:
     from playsound import playsound
 
@@ -26,8 +26,7 @@ except ImportError:
     PLAYSOUND_AVAILABLE = False
 
 
-# ===== WORD CLEANING =====
-
+# ===== ОЧИСТКА СЛОВ =====
 @lru_cache(maxsize=2048)
 def get_safe_filename(word: str) -> str:
     """
@@ -40,8 +39,7 @@ def get_safe_filename(word: str) -> str:
     return "".join(c for c in word_lower if c.isalnum())
 
 
-# ===== SESSION MANAGEMENT =====
-
+# ===== УПРАВЛЕНИЕ СЕССИЯМИ =====
 def _create_session(max_retries=2, backoff_factor=0.2):
     """Создает HTTP session с оптимизированной retry стратегией"""
     session = requests.Session()
@@ -51,11 +49,13 @@ def _create_session(max_retries=2, backoff_factor=0.2):
         status_forcelist=[429, 502, 503, 504],
         allowed_methods=["HEAD", "GET", "OPTIONS"]
     )
+
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
         pool_connections=10,
         pool_maxsize=50
     )
+
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     session.headers.update({
@@ -64,16 +64,15 @@ def _create_session(max_retries=2, backoff_factor=0.2):
     return session
 
 
+# Глобальные сессии для переиспользования соединений
 session_dict = _create_session()
 session_google = _create_session()
 session_pexels = _create_session()
 session_wiki = _create_session()
-
 _audio_play_lock = threading.Lock()
 
 
-# ===== CACHE HELPERS =====
-
+# ===== ХЕЛПЕРЫ КЭША =====
 def get_cache_path(word):
     """Возвращает путь к файлу кэша словарных данных"""
     safe_word = get_safe_filename(word)
@@ -111,7 +110,6 @@ def is_image_not_found(word) -> bool:
 
 
 # ===== GOOGLE TTS =====
-
 def get_google_tts_url(word: str, accent: str = "us") -> str:
     """
     Генерирует URL для Google TTS.
@@ -126,12 +124,10 @@ def is_valid_audio_file(path: str) -> bool:
     """Проверяет валидность аудио файла"""
     if not os.path.exists(path):
         return False
-
     try:
         size = os.path.getsize(path)
         if size < MIN_VALID_AUDIO_SIZE:
             return False
-
         # Проверка MP3 magic bytes
         with open(path, 'rb') as f:
             header = f.read(3)
@@ -141,18 +137,16 @@ def is_valid_audio_file(path: str) -> bool:
 
 
 def download_and_cache_audio(url: str, cache_path: str) -> bool:
-    """Загружает и кэширует аудио файл"""
+    """Загружает и кэширует аудио файл с атомарной записью"""
     try:
         resp = session_google.get(url, timeout=10)
         if resp.status_code == 200:
-            # Atomic write pattern
+            # Атомарная запись через временный файл
             temp_path = cache_path + '.tmp'
             with open(temp_path, "wb") as f:
                 f.write(resp.content)
-
             # Атомарная замена (работает на Windows и POSIX)
             os.replace(temp_path, cache_path)
-
             return is_valid_audio_file(cache_path)
     except (requests.RequestException, IOError, OSError):
         pass
@@ -166,17 +160,15 @@ def _cache_audio_async(url: str, cache_path: str):
 
 
 def streaming_play_and_cache(url: str, cache_path: str):
-    """Потоковое воспроизведение с кэшированием"""
+    """Потоковое воспроизведение с одновременным кэшированием"""
     if not PLAYSOUND_AVAILABLE:
         return
 
     try:
         resp = session_google.get(url, timeout=10, stream=True)
-
         if resp.status_code == 200:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                 tmp_path = tmp.name
-
                 chunk_size = 4096
                 chunks_written = 0
                 play_started = False
@@ -185,7 +177,7 @@ def streaming_play_and_cache(url: str, cache_path: str):
                     if chunk:
                         tmp.write(chunk)
                         chunks_written += 1
-
+                        # Начинаем воспроизведение после 2 чанков
                         if chunks_written == 2 and not play_started:
                             play_started = True
                             threading.Thread(
@@ -197,11 +189,10 @@ def streaming_play_and_cache(url: str, cache_path: str):
             # Явное закрытие handle перед move (критично для Windows)
             tmp.close()
 
-            # Atomic write
+            # Атомарная запись
             temp_final = cache_path + '.tmp'
             shutil.move(tmp_path, temp_final)
             os.replace(temp_final, cache_path)
-
     except (requests.RequestException, IOError, OSError):
         pass
 
@@ -223,19 +214,18 @@ def _safe_play(path: str):
                 time.sleep(0.05)
 
 
-# ===== DICTIONARY DATA =====
-
+# ===== СЛОВАРНЫЕ ДАННЫЕ =====
 def check_cache_only(word):
-    """Быстрая проверка наличия перевода в кэше"""
+    """Быстрая проверка наличия перевода в кэше (без загрузки полных данных)"""
     path = get_cache_path(word)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {
-                "rus": data.get("rus", ""),
-                "cached": True
-            }
+                return {
+                    "rus": data.get("rus", ""),
+                    "cached": True
+                }
         except (IOError, OSError, json.JSONDecodeError, ValueError):
             pass
     return None
@@ -266,6 +256,11 @@ def save_full_dictionary_data(word, data):
 def fetch_full_dictionary_data(word):
     """
     Загружает полные данные словаря из API.
+
+    КРИТИЧНО: API может возвращать несколько словарных статей для одного слова.
+    Например, "meeting" возвращает 2 элемента: [noun entry, verb entry].
+    Функция объединяет meanings из всех элементов в один.
+
     Оптимизировано:
     - Проверяет кэш перед HTTP запросом
     - Google TTS кэшируется асинхронно без блокировки
@@ -274,7 +269,7 @@ def fetch_full_dictionary_data(word):
     """
     # Проверяем полный кэш перед запросом к API
     cached = load_full_dictionary_data(word)
-    if cached and cached.get("meanings"):
+    if cached:
         return cached
 
     # Очищаем слово для запроса к API
@@ -295,7 +290,41 @@ def fetch_full_dictionary_data(word):
         if resp.status_code == 200:
             data_list = resp.json()
             if data_list and isinstance(data_list, list):
-                full_data = data_list[0]
+                # ===== КРИТИЧНО: ОБЪЕДИНЯЕМ MEANINGS ИЗ ВСЕХ ЭЛЕМЕНТОВ =====
+                # Берём метаданные из первого элемента
+                first_entry = data_list[0]
+                word_text = first_entry.get("word", cleaned_word)
+                phonetics_list = first_entry.get("phonetics", [])
+                license_info = first_entry.get("license", {})
+                source_urls = first_entry.get("sourceUrls", [])
+
+                # Собираем все meanings из ВСЕХ элементов
+                all_meanings = []
+                for entry in data_list:
+                    entry_meanings = entry.get("meanings", [])
+                    all_meanings.extend(entry_meanings)
+
+                    # Дополняем phonetics если есть уникальные
+                    entry_phonetics = entry.get("phonetics", [])
+                    for phon in entry_phonetics:
+                        if phon not in phonetics_list:
+                            phonetics_list.append(phon)
+
+                    # Дополняем sourceUrls если есть уникальные
+                    entry_sources = entry.get("sourceUrls", [])
+                    for src in entry_sources:
+                        if src not in source_urls:
+                            source_urls.append(src)
+
+                # Создаём объединённую структуру
+                full_data = {
+                    "word": word_text,
+                    "phonetics": phonetics_list,
+                    "meanings": all_meanings,  # ✅ ВСЕ meanings из всех элементов!
+                    "license": license_info,
+                    "sourceUrls": source_urls
+                }
+                # ===== КОНЕЦ КРИТИЧНОГО БЛОКА =====
 
                 # Получаем русский перевод
                 rus_trans = fetch_yandex_translation(cleaned_word)
@@ -313,9 +342,7 @@ def fetch_full_dictionary_data(word):
                     "license": {"name": "Google TTS", "url": ""}
                 }]
 
-                full_data["word"] = cleaned_word
                 save_full_dictionary_data(word, full_data)
-
                 return full_data
     except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError, TypeError):
         pass
@@ -345,8 +372,7 @@ def fetch_full_dictionary_data(word):
     return None
 
 
-# ===== TRANSLATION =====
-
+# ===== ПЕРЕВОДЫ =====
 def fetch_yandex_translation(word):
     """Получает перевод из Yandex Dictionary API"""
     key = cfg.get("API", "YandexKey")
@@ -355,6 +381,7 @@ def fetch_yandex_translation(word):
 
     cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
     url = f"https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key={key}&lang=en-ru&text={cleaned_word}"
+
     try:
         resp = session_google.get(url, timeout=3)
         if resp.status_code == 200:
@@ -394,7 +421,7 @@ def fetch_google_translation(word):
 
 
 def fetch_word_translation(word):
-    """Получает перевод слова с использованием кэша"""
+    """Получает перевод слова с использованием кэша (legacy функция для совместимости)"""
     full_data = load_full_dictionary_data(word)
     if full_data and "rus" in full_data:
         return {"rus": full_data["rus"], "cached": True}
@@ -438,12 +465,10 @@ def fetch_sentence_translation(text):
             return translated_text
     except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError, TypeError):
         pass
-
     return None
 
 
-# ===== IMAGES =====
-
+# ===== ИЗОБРАЖЕНИЯ =====
 def download_image(url, word):
     """Загружает изображение по URL"""
     try:
@@ -458,7 +483,6 @@ def download_image(url, word):
             path = get_image_path(word)
             with open(path, "wb") as f:
                 f.write(resp.content)
-
             if os.path.exists(path):
                 return path
     except (requests.RequestException, IOError, OSError):
@@ -492,7 +516,6 @@ def fetch_pexels_image(word):
                 return download_image(img_url, word)
     except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError):
         pass
-
     return None
 
 
@@ -504,6 +527,7 @@ def fetch_wiki_image(word):
     cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
     url = f"https://en.wikipedia.org/w/api.php?action=query&titles={cleaned_word}&prop=pageimages&format=json&pithumbsize={IMAGE_THUMBNAIL_SIZE}"
 
+    # Черный список для фильтрации служебных изображений
     blacklist = [
         "Commons-logo", "Disambig", "Ambox", "Wiki_letter",
         "Question_book", "Folder", "Decrease", "Increase",
@@ -517,45 +541,43 @@ def fetch_wiki_image(word):
 
     try:
         resp = session_wiki.get(url, timeout=5)
-
         if resp.status_code == 200:
             data = resp.json()
             pages = data.get("query", {}).get("pages", {})
-
             for page_id in pages:
                 if page_id == "-1":
                     continue
 
                 page = pages[page_id]
-
                 if "thumbnail" not in page:
                     continue
 
                 thumbnail = page["thumbnail"]
                 img_url = thumbnail.get("source", "")
-
                 if not img_url:
                     continue
 
+                # Фильтрация служебных изображений
                 if any(bad.lower() in img_url.lower() for bad in blacklist):
                     continue
 
+                # Проверка минимального разрешения
                 width = thumbnail.get("width", 0)
                 height = thumbnail.get("height", 0)
-
                 if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
                     continue
 
                 return download_image(img_url, word)
-
     except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError):
         pass
-
     return None
 
 
 def fetch_image(word):
-    """Загружает изображение из доступных источников"""
+    """
+    Загружает изображение из доступных источников.
+    Возвращает (path, source_name) или (None, "None")
+    """
     path = fetch_pexels_image(word)
     if path:
         return path, "Pexels"
@@ -564,6 +586,7 @@ def fetch_image(word):
     if path:
         return path, "Wiki"
 
+    # Помечаем как не найденное только если оба источника не дали результат
     if not is_image_not_found(word):
         mark_image_not_found(word)
 
@@ -571,7 +594,7 @@ def fetch_image(word):
 
 
 def close_all_sessions():
-    """Закрывает все HTTP сессии"""
+    """Закрывает все HTTP сессии при завершении приложения"""
     session_dict.close()
     session_google.close()
     session_pexels.close()

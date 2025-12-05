@@ -8,12 +8,136 @@ Responsibilities:
 - Hover-переводы для примеров
 - Кликабельные синонимы
 - Организация контента по кастомным вкладкам
+- Интеграция lemminflect для генерации словоформ с fallback логикой
 """
 
 import tkinter as tk
 from typing import Dict, List, Optional, Callable
 from gui.styles import COLORS, FONTS
 from gui.scrollbar import CustomScrollbar
+
+# Условный импорт lemminflect с graceful degradation
+try:
+    import lemminflect
+    LEMMINFLECT_AVAILABLE = True
+except ImportError:
+    lemminflect = None
+    LEMMINFLECT_AVAILABLE = False
+
+# ===== КОНСТАНТЫ ДЛЯ LEMMINFLECT =====
+
+# Маппинг dictionaryapi.dev частей речи → Universal POS tags
+POS_TO_UPOS = {
+    # Основные вкладки (есть формы)
+    "noun": "NOUN",
+    "verb": "VERB",
+    "adjective": "ADJ",
+    "adverb": "ADV",
+    # OTHER вкладка (НЕТ форм)
+    "pronoun": None,  # Не поддерживается lemminflect
+    "auxiliary": None,  # Не поддерживается как отдельный тег
+    "preposition": None,
+    "conjunction": None,
+    "interjection": None,
+    "exclamation": None,
+    "determiner": None,
+    "article": None,
+}
+
+# Человекочитаемые названия Penn Treebank тегов
+FORM_LABELS = {
+    # Существительные
+    'NN': 'Singular',
+    'NNS': 'Plural',
+    # Глаголы
+    'VB': 'Base',
+    'VBD': 'Past',
+    'VBG': 'Gerund',
+    'VBN': 'Past Participle',
+    'VBP': 'Present',
+    'VBZ': '3rd Person Singular',
+    # Прилагательные
+    'JJ': 'Base',
+    'JJR': 'Comparative',
+    'JJS': 'Superlative',
+    # Наречия
+    'RB': 'Base',
+    'RBR': 'Comparative',
+    'RBS': 'Superlative',
+}
+
+def get_upos(pos: str) -> Optional[str]:
+    """
+    Получает UPOS тег для части речи с fallback на None для неизвестных.
+
+    Args:
+        pos: Часть речи из dictionaryapi.dev
+
+    Returns:
+        UPOS тег или None если формы не поддерживаются
+    """
+    return POS_TO_UPOS.get(pos.lower(), None)
+
+def get_word_forms(word: str, pos: str) -> list[str]:
+    """
+    Получает словоформы через lemminflect с многоуровневым fallback.
+
+    Стратегия:
+    1. Получить лемму через getLemma()
+    2. Получить формы от леммы
+    3. Если не получилось — попробовать формы от самого слова (может быть базовая форма)
+
+    Это решает проблему:
+    - "include" (базовая форма) → лемма="include" → формы ✅
+    - "included" (verb) → лемма="include" → формы глагола ✅
+    - "included" (adj) → лемма="included" или пусто → fallback на само слово → формы прилагательного ✅
+
+    Args:
+        word: Слово для генерации форм
+        pos: Часть речи из dictionaryapi.dev
+
+    Returns:
+        Список строк вида "Label: form" или пустой список
+    """
+    # Проверяем доступность библиотеки
+    if not LEMMINFLECT_AVAILABLE:
+        return []
+
+    # Получаем UPOS тег
+    upos = get_upos(pos)
+    if upos is None:
+        return []
+
+    try:
+        # ШАГ 1: Получаем лемму (базовую форму)
+        lemma_tuple = lemminflect.getLemma(word, upos=upos)
+        lemma = lemma_tuple[0] if lemma_tuple else word
+
+        # ШАГ 2: Получаем формы от леммы
+        forms_dict = lemminflect.getAllInflections(lemma, upos=upos)
+
+        # ШАГ 3: Fallback — если не получили формы и лемма != слово
+        # Пробуем само слово (может быть уже базовая форма)
+        if not forms_dict and lemma != word:
+            forms_dict = lemminflect.getAllInflections(word, upos=upos)
+
+        if not forms_dict:
+            return []
+
+        # Конвертируем в список строк "Label: form"
+        result = []
+        for tag, forms_tuple in sorted(forms_dict.items()):
+            label = FORM_LABELS.get(tag, tag)
+            # Берём первую форму из tuple (обычно там одна)
+            form = forms_tuple[0] if forms_tuple else ""
+            if form:
+                result.append(f"{label}: {form}")
+
+        return result
+
+    except Exception:
+        # Любая ошибка lemminflect → возвращаем пустой список
+        return []
 
 
 class CustomTabBar(tk.Frame):
@@ -48,6 +172,7 @@ class CustomTabBar(tk.Frame):
             # Контейнер для вкладки с нижней границей
             container = tk.Frame(self, bg=COLORS["bg_secondary"], highlightthickness=0)
             container.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=(1, 0))
+
             btn = tk.Label(
                 container,
                 text=tab_name,
@@ -74,6 +199,7 @@ class CustomTabBar(tk.Frame):
         """Обработка клика по вкладке"""
         if idx in self.disabled_tabs:
             return  # Игнорируем клики по disabled вкладкам
+
         if idx != self.active_tab:
             self.set_active_tab(idx)
             self.on_tab_change(idx)
@@ -86,7 +212,7 @@ class CustomTabBar(tk.Frame):
             idx: Индекс вкладки
         """
         # Сброс предыдущей активной вкладки (ТОЛЬКО ЕСЛИ ЕСТЬ)
-        if self.active_tab is not None:  # ← КРИТИЧНО: проверка на None
+        if self.active_tab is not None:
             old_btn, old_border, old_container = self.tab_buttons[self.active_tab]
             old_btn.config(
                 bg=COLORS["bg_secondary"],
@@ -103,7 +229,6 @@ class CustomTabBar(tk.Frame):
             font=FONTS["definition"]
         )
         new_border.config(bg=COLORS["text_accent"])  # Желтая граница 1px
-
         self.active_tab = idx
 
     def set_tab_disabled(self, idx: int, disabled: bool):
@@ -177,6 +302,7 @@ class CustomNotebook(tk.Frame):
         """
         self.tabs_data[idx] = content_frame
         content_frame.pack_forget()  # Скрываем по умолчанию
+
         if disabled:
             self.tab_bar.set_tab_disabled(idx, True)
 
@@ -212,6 +338,7 @@ class DictionaryRenderer:
     - Lazy rendering для больших списков
     - Минимум вложенных frames
     - Кастомные вкладки по частям речи
+    - Интеграция lemminflect для генерации словоформ с fallback логикой
     """
 
     # Константы для группировки частей речи
@@ -223,15 +350,6 @@ class DictionaryRenderer:
         "adjective": "ADJECTIVE",
         "adverb": "ADVERB",
         "other": "OTHER"
-    }
-
-    # Примеры словоформ (placeholder для lemminflect)
-    FORMS_EXAMPLES = {
-        "noun": ["Base: cat", "Plural: cats"],
-        "verb": ["Base: go", "Past: went", "Past Participle: gone", "Gerund: going"],
-        "adjective": ["Base: big", "Comparative: bigger", "Superlative: biggest"],
-        "adverb": ["Base: quickly", "Comparative: more quickly"],
-        "other": ["Form: that"]
     }
 
     def __init__(self,
@@ -258,7 +376,8 @@ class DictionaryRenderer:
         self.on_synonym_click = on_synonym_click
         self.on_synonym_enter = on_synonym_enter
         self.on_synonym_leave = on_synonym_leave
-        self.canvas_scroll = canvas_scroll  # Legacy, не используется
+        self.canvas_scroll = canvas_scroll
+        self.current_word = ""  # Текущее слово для lemminflect
 
     def clear(self):
         """Очищает все виджеты из scrollable frame"""
@@ -274,17 +393,56 @@ class DictionaryRenderer:
         """
         self.clear()
 
-        if not full_data or not full_data.get("meanings"):
+        # КРИТИЧНО: Если full_data = None, пытаемся получить хотя бы формы
+        if not full_data:
             self._render_no_data()
             return
 
-        meanings = full_data.get("meanings", [])
+        self.current_word = full_data.get("word", "")
 
-        # КРИТИЧНО: Объединяем meanings с одинаковой частью речи перед рендерингом
+        # Meanings от API (могут быть пустыми)
+        meanings = full_data.get("meanings", [])
         merged_meanings = self._merge_meanings_by_pos(meanings)
 
-        # ВСЕГДА создаём вкладки
-        self._render_notebook(merged_meanings)
+        # Lemminflect части (всегда пытаемся получить)
+        lemminflect_parts = self._get_lemminflect_parts(self.current_word)
+
+        # КРИТИЧНО: Если ни API, ни lemminflect не дали данных → no data
+        if not merged_meanings and not lemminflect_parts:
+            self._render_no_data()
+            return
+
+        # Рендерим notebook (с данными от API и/или lemminflect)
+        self._render_notebook(merged_meanings, lemminflect_parts)
+
+    def _get_lemminflect_parts(self, word: str) -> set[str]:
+        """
+        Определяет все части речи для слова через lemminflect.
+        Пытается получить формы для всех основных частей речи.
+        Если формы существуют → часть речи поддерживается.
+
+        Args:
+            word: Слово для анализа
+
+        Returns:
+            Set частей речи в нижнем регистре: {"noun", "verb", ...}
+        """
+        if not LEMMINFLECT_AVAILABLE:
+            return set()
+
+        if not word or not word.strip():
+            return set()
+
+        supported_parts = set()
+
+        # Проверяем каждую основную часть речи
+        for pos in self.MAJOR_POS:
+            # Получаем формы (функция сама использует fallback логику)
+            forms = get_word_forms(word, pos)
+            if forms:
+                supported_parts.add(pos)
+
+        return supported_parts
 
     def _merge_meanings_by_pos(self, meanings: List[Dict]) -> List[Dict]:
         """
@@ -308,6 +466,7 @@ class DictionaryRenderer:
 
         for meaning in meanings:
             pos = meaning.get("partOfSpeech", "unknown")
+
             if pos not in merged:
                 order.append(pos)
                 merged[pos] = {
@@ -342,68 +501,93 @@ class DictionaryRenderer:
 
         return result
 
-    def _group_meanings(self, merged_meanings: List[Dict]) -> Dict[str, Optional[Dict]]:
+    def _group_meanings(self, merged_meanings: List[Dict], lemminflect_parts: set[str]) -> Dict[str, Optional[Dict]]:
         """
         Группирует meanings по категориям вкладок.
+        НОВОЕ: Учитывает части речи от lemminflect для включения пустых вкладок.
+
+        Args:
+            merged_meanings: Meanings от API
+            lemminflect_parts: Части речи от lemminflect
 
         Returns:
-            Dict с ключами из POS_ORDER, значения — meaning или None
+            Dict с ключами из POS_ORDER, значения — meaning или placeholder или None
         """
         grouped = {pos: None for pos in self.POS_ORDER}
         other_meanings = []
 
+        # Группируем meanings от API
         for meaning in merged_meanings:
             pos = meaning.get("partOfSpeech", "").lower()
             if pos in self.MAJOR_POS:
                 grouped[pos] = meaning
             else:
-                # Собираем все "другие" части речи
+                # ВСЁ ОСТАЛЬНОЕ (включая неизвестное) → OTHER
                 other_meanings.append(meaning)
 
         # Если есть "другие" части речи, создаём combined meaning
         if other_meanings:
             grouped["other"] = {
                 "partOfSpeech": "other",
-                "meanings": other_meanings  # Список meanings для рендеринга
+                "meanings": other_meanings
             }
+
+        # НОВОЕ: Дополняем пустыми meanings для частей речи от lemminflect
+        for pos in lemminflect_parts:
+            if pos in self.MAJOR_POS and grouped[pos] is None:
+                # Создаём placeholder meaning (только формы, без определений)
+                grouped[pos] = {
+                    "partOfSpeech": pos,
+                    "definitions": [],  # Пусто
+                    "synonyms": [],
+                    "antonyms": [],
+                    "lemminflect_only": True  # Флаг для специальной обработки
+                }
 
         return grouped
 
-    def _get_first_active_index(self, merged_meanings: List[Dict]) -> int:
+    def _get_first_active_index(self, merged_meanings: List[Dict], grouped: Dict[str, Optional[Dict]]) -> int:
         """
         Определяет индекс первой активной вкладки.
+        НОВОЕ: Учитывает вкладки созданные только lemminflect.
 
         Args:
-            merged_meanings: Список объединённых meanings
+            merged_meanings: Meanings от API
+            grouped: Сгруппированные meanings (включая lemminflect_only)
 
         Returns:
-            Индекс первой активной вкладки
+            Индекс первой активной вкладки (0-4)
         """
-        if not merged_meanings:
-            return 0
+        # Приоритет 1: Первая часть речи от API
+        if merged_meanings:
+            first_pos = merged_meanings[0].get("partOfSpeech", "").lower()
+            if first_pos in self.MAJOR_POS:
+                return self.POS_ORDER.index(first_pos)
 
-        first_pos = merged_meanings[0].get("partOfSpeech", "").lower()
-        if first_pos in self.MAJOR_POS:
-            return self.POS_ORDER.index(first_pos)
-        else:
-            # Если первая часть речи в OTHER
-            return self.POS_ORDER.index("other")
+        # Приоритет 2: Первая активная вкладка в порядке NOUN → VERB → ADJ → ADV → OTHER
+        for idx, pos in enumerate(self.POS_ORDER):
+            if grouped[pos] is not None:
+                return idx
 
-    def _render_notebook(self, merged_meanings: List[Dict]):
+        # Fallback (не должно произойти)
+        return 0
+
+    def _render_notebook(self, merged_meanings: List[Dict], lemminflect_parts: set[str]):
         """
         Создаёт кастомный Notebook с вкладками по частям речи.
-
         КРИТИЧНО: Всегда создаёт все 5 вкладок в фиксированном порядке.
+        НОВОЕ: Учитывает данные от lemminflect.
 
         Args:
             merged_meanings: Список объединённых meanings
+            lemminflect_parts: Части речи от lemminflect
         """
         # Создаём кастомный notebook
         notebook = CustomNotebook(self.parent)
         notebook.pack(fill="both", expand=True)
 
         # Группируем meanings
-        grouped = self._group_meanings(merged_meanings)
+        grouped = self._group_meanings(merged_meanings, lemminflect_parts)
 
         # Создаём все 5 вкладок
         for idx, pos in enumerate(self.POS_ORDER):
@@ -419,7 +603,7 @@ class DictionaryRenderer:
                 notebook.add_tab(idx, tab_frame, disabled=True)
 
         # Показываем первую активную вкладку
-        first_active_index = self._get_first_active_index(merged_meanings)
+        first_active_index = self._get_first_active_index(merged_meanings, grouped)
         notebook.show_tab(first_active_index)
 
     def _create_active_tab_content(self, tab_parent: tk.Frame, meaning: Dict, pos: str):
@@ -431,44 +615,75 @@ class DictionaryRenderer:
         2. Разделитель
         3. Scrollable блок с определениями
 
+        КРИТИЧНО: Для OTHER проверяем наличие sub-meanings вместо definitions.
+
         Args:
             tab_parent: Frame вкладки
             meaning: Объединённый meaning блок
-            pos: Часть речи (для примеров форм)
+            pos: Часть речи (для форм)
         """
-        # Блок 1: Forms (фиксированный)
+        is_lemminflect_only = meaning.get("lemminflect_only", False)
+
+        # Блок 1: Forms (всегда показываем)
         forms_frame = tk.Frame(tab_parent, bg=COLORS["bg"])
         forms_frame.pack(fill="x", padx=10, pady=(10, 5))
-        self._render_forms_block(forms_frame, pos)
+        forms_labels = self._render_forms_block(forms_frame, pos, self.current_word)
 
-        # Separator
-        tk.Frame(tab_parent, height=1, bg=COLORS["separator"]).pack(fill="x", padx=10, pady=5)
-
-        # Блок 2: Scrollable content
-        scroll_container = tk.Frame(tab_parent, bg=COLORS["bg"])
-        scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
-
-        # Создаём Canvas + Scrollbar для этой вкладки
-        canvas = tk.Canvas(scroll_container, bg=COLORS["bg"], highlightthickness=0)
-        scrollbar = CustomScrollbar(scroll_container, canvas)
-        scrollable_frame = tk.Frame(canvas, bg=COLORS["bg"])
-
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.update)
-        canvas.pack(side="left", fill="both", expand=True)
-
-        # Привязываем mousewheel к этому canvas
-        canvas.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
-        scrollable_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
-
-        # Рендерим определения
+        # КРИТИЧНО: Для OTHER проверяем наличие sub-meanings
+        has_content = False
         if pos == "other":
-            # Для OTHER рендерим все meanings с заголовками
-            self._render_other_content(scrollable_frame, canvas, meaning)
+            # Для OTHER проверяем meanings (sub-meanings)
+            has_content = bool(meaning.get("meanings"))
         else:
-            # Для обычных частей речи рендерим как обычно
-            self._render_scrollable_content(scrollable_frame, canvas, meaning)
+            # Для остальных проверяем definitions
+            has_content = bool(meaning.get("definitions"))
+
+        # Если есть контент — показываем разделитель и scrollable content
+        if not is_lemminflect_only and has_content:
+            # Separator
+            tk.Frame(tab_parent, height=1, bg=COLORS["separator"]).pack(fill="x", padx=10, pady=5)
+
+            # Блок 2: Scrollable content
+            scroll_container = tk.Frame(tab_parent, bg=COLORS["bg"])
+            scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
+
+            # Создаём Canvas + Scrollbar для этой вкладки
+            canvas = tk.Canvas(scroll_container, bg=COLORS["bg"], highlightthickness=0)
+            scrollbar = CustomScrollbar(scroll_container, canvas)
+            scrollable_frame = tk.Frame(canvas, bg=COLORS["bg"])
+
+            scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.update)
+            canvas.pack(side="left", fill="both", expand=True)
+
+            # Привязываем mousewheel к этому canvas
+            canvas.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
+            scrollable_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
+
+            # Рендерим определения
+            if pos == "other":
+                # Для OTHER рендерим все meanings с заголовками
+                self._render_other_content(scrollable_frame, canvas, meaning)
+            else:
+                # Для обычных частей речи рендерим как обычно
+                self._render_scrollable_content(scrollable_frame, canvas, meaning)
+
+            # Привязываем mousewheel к forms labels
+            for lbl in forms_labels:
+                lbl.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
+        else:
+            # Только формы, без определений
+            # Показываем placeholder текст
+            lbl_no_defs = tk.Label(
+                tab_parent,
+                text="No definitions available",
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_faint"],
+                pady=20
+            )
+            lbl_no_defs.pack(expand=True)
 
     def _create_disabled_tab_content(self, tab_parent: tk.Frame, pos: str):
         """
@@ -487,13 +702,23 @@ class DictionaryRenderer:
         )
         lbl.pack(expand=True)
 
-    def _render_forms_block(self, parent: tk.Frame, pos: str):
+    def _render_forms_block(self, parent: tk.Frame, pos: str, word: str) -> list[tk.Label]:
         """
-        Рендерит блок словоформ (placeholder).
+        Рендерит блок словоформ.
+
+        Приоритет источников:
+        1. lemminflect (если доступен) — реальные формы с fallback логикой
+        2. "No forms" — текстовый fallback
+
+        НОВОЕ: Выделяет исходное слово жёлтым цветом.
 
         Args:
             parent: Frame для рендеринга
-            pos: Часть речи
+            pos: Часть речи ("noun", "verb", etc.)
+            word: Текущее слово для генерации форм
+
+        Returns:
+            Список созданных labels для последующего mousewheel binding
         """
         # Заголовок
         lbl_title = tk.Label(
@@ -505,19 +730,54 @@ class DictionaryRenderer:
             anchor="w"
         )
         lbl_title.pack(anchor="w", pady=(0, 5))
+        created_labels = [lbl_title]
 
-        # Примеры форм
-        forms = self.FORMS_EXAMPLES.get(pos, ["Form: example"])
-        for form in forms:
-            lbl_form = tk.Label(
+        # КРИТИЧНО: Пытаемся получить реальные формы через lemminflect
+        # Функция get_word_forms() уже использует fallback логику
+        forms = get_word_forms(word, pos)
+
+        # Fallback на "No forms" если:
+        # - lemminflect не установлен (LEMMINFLECT_AVAILABLE = False)
+        # - get_word_forms() вернул пустой список
+        if not forms:
+            lbl_no_forms = tk.Label(
                 parent,
-                text=f"  {form}",
+                text="  No forms",
                 font=FONTS["definition"],
                 bg=COLORS["bg"],
-                fg=COLORS["text_main"],
+                fg=COLORS["text_faint"],  # Серый цвет
+                anchor="w"
+            )
+            lbl_no_forms.pack(anchor="w", pady=1)
+            created_labels.append(lbl_no_forms)
+            return created_labels
+
+        # Нормализуем исходное слово для сравнения
+        original_word_lower = word.lower().strip()
+
+        # Рендерим реальные формы с выделением исходного слова
+        for form_str in forms:
+            # Парсим строку "Label: word"
+            parts = form_str.split(": ", 1)
+            if len(parts) == 2:
+                label, form_word = parts
+                is_original = (form_word.lower().strip() == original_word_lower)
+                color = COLORS["text_accent"] if is_original else COLORS["text_main"]
+            else:
+                color = COLORS["text_main"]
+
+            lbl_form = tk.Label(
+                parent,
+                text=f"  {form_str}",
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=color,
                 anchor="w"
             )
             lbl_form.pack(anchor="w", pady=1)
+            created_labels.append(lbl_form)
+
+        return created_labels
 
     def _render_scrollable_content(self, scrollable_frame: tk.Frame, canvas: tk.Canvas, meaning: Dict):
         """
@@ -547,6 +807,7 @@ class DictionaryRenderer:
     def _render_other_content(self, scrollable_frame: tk.Frame, canvas: tk.Canvas, other_meaning: Dict):
         """
         Рендерит содержимое вкладки OTHER с заголовками для каждой части речи.
+        НОВОЕ: Добавляет блок Forms для частей речи с lemminflect поддержкой.
 
         Args:
             scrollable_frame: Frame для рендеринга
@@ -568,6 +829,22 @@ class DictionaryRenderer:
             )
             lbl_pos.pack(anchor="w", padx=10, pady=(10, 5))
             lbl_pos.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
+
+            # НОВОЕ: Блок словоформ (если есть поддержка lemminflect)
+            upos = get_upos(pos)
+            if upos:  # Есть поддержка форм
+                forms_frame = tk.Frame(scrollable_frame, bg=COLORS["bg"])
+                forms_frame.pack(fill="x", padx=10, pady=(0, 5))
+                forms_labels = self._render_forms_block(forms_frame, pos, self.current_word)
+
+                # Привязываем mousewheel
+                for lbl in forms_labels:
+                    lbl.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
+
+                # Разделитель после Forms
+                tk.Frame(scrollable_frame, height=1, bg=COLORS["separator"]).pack(
+                    fill="x", padx=10, pady=5
+                )
 
             # Рендерим определения этой части речи
             self._render_scrollable_content(scrollable_frame, canvas, meaning)
@@ -860,7 +1137,6 @@ class DictionaryRenderer:
     def _on_tab_mousewheel(self, event, canvas: tk.Canvas):
         """
         Обработчик mousewheel для Canvas внутри вкладки.
-
         Перенаправляет событие на соответствующий canvas для корректной прокрутки.
         КРИТИЧНО: Проверяет необходимость прокрутки перед выполнением.
 
@@ -879,4 +1155,3 @@ class DictionaryRenderer:
         # Выполняем прокрутку
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"  # Останавливаем всплытие события
-
