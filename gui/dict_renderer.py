@@ -37,7 +37,7 @@ class CustomTabBar(tk.Frame):
         self.pack_propagate(False)
         self.tabs = tabs
         self.on_tab_change = on_tab_change
-        self.active_tab = 0
+        self.active_tab = None
         self.tab_buttons = []
         self.disabled_tabs = set()
         self._create_tabs()
@@ -85,21 +85,22 @@ class CustomTabBar(tk.Frame):
         Args:
             idx: Индекс вкладки
         """
-        # Сброс предыдущей активной вкладки
-        old_btn, old_border, old_container = self.tab_buttons[self.active_tab]
-        old_btn.config(
-            bg=COLORS["bg_secondary"],
-            fg=COLORS["text_main"],
-            font=FONTS["definition"]
-        )
-        old_border.config(bg=COLORS["bg_secondary"])
+        # Сброс предыдущей активной вкладки (ТОЛЬКО ЕСЛИ ЕСТЬ)
+        if self.active_tab is not None:  # ← КРИТИЧНО: проверка на None
+            old_btn, old_border, old_container = self.tab_buttons[self.active_tab]
+            old_btn.config(
+                bg=COLORS["bg_secondary"],
+                fg=COLORS["text_main"],
+                font=FONTS["definition"]
+            )
+            old_border.config(bg=COLORS["bg_secondary"])
 
         # Установка новой активной вкладки
         new_btn, new_border, new_container = self.tab_buttons[idx]
         new_btn.config(
             bg=COLORS["bg"],
             fg=COLORS["text_accent"],
-            font=FONTS["definition"]  # Убрали underline
+            font=FONTS["definition"]
         )
         new_border.config(bg=COLORS["text_accent"])  # Желтая граница 1px
 
@@ -861,10 +862,21 @@ class DictionaryRenderer:
         Обработчик mousewheel для Canvas внутри вкладки.
 
         Перенаправляет событие на соответствующий canvas для корректной прокрутки.
+        КРИТИЧНО: Проверяет необходимость прокрутки перед выполнением.
 
         Args:
             event: MouseWheel событие
             canvas: Canvas вкладки
         """
+        # Получаем границы видимой области
+        view = canvas.yview()
+
+        # Проверяем нужна ли прокрутка
+        # Если весь контент виден (view[0] == 0.0 и view[1] >= 1.0), игнорируем событие
+        if view[0] <= 0.0 and view[1] >= 1.0:
+            return "break"  # Контент полностью виден, прокрутка не нужна
+
+        # Выполняем прокрутку
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"  # Останавливаем всплытие события
+
