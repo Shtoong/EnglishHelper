@@ -7,11 +7,199 @@ Responsibilities:
 - Рендеринг определений, примеров, синонимов, антонимов
 - Hover-переводы для примеров
 - Кликабельные синонимы
+- Организация контента по кастомным вкладкам
 """
 
 import tkinter as tk
 from typing import Dict, List, Optional, Callable
 from gui.styles import COLORS, FONTS
+from gui.scrollbar import CustomScrollbar
+
+
+class CustomTabBar(tk.Frame):
+    """
+    Кастомная полоса вкладок с дизайном Serika Dark.
+
+    Features:
+    - Желтая акцентная линия под активной вкладкой
+    - Hover эффекты для неактивных вкладок
+    - Disabled состояние для пустых вкладок
+    """
+
+    def __init__(self, parent, tabs: List[str], on_tab_change: Callable):
+        """
+        Args:
+            parent: Родительский frame
+            tabs: Список названий вкладок
+            on_tab_change: Callback при смене вкладки (получает index)
+        """
+        super().__init__(parent, bg=COLORS["bg_secondary"], height=40)
+        self.pack_propagate(False)
+        self.tabs = tabs
+        self.on_tab_change = on_tab_change
+        self.active_tab = 0
+        self.tab_buttons = []
+        self.disabled_tabs = set()
+        self._create_tabs()
+
+    def _create_tabs(self):
+        """Создаёт кнопки-вкладки"""
+        for idx, tab_name in enumerate(self.tabs):
+            # Контейнер для вкладки с нижней границей
+            container = tk.Frame(self, bg=COLORS["bg_secondary"], highlightthickness=0)
+            container.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=(1, 0))
+            btn = tk.Label(
+                container,
+                text=tab_name,
+                font=FONTS["definition"],
+                bg=COLORS["bg_secondary"],
+                fg=COLORS["text_main"],
+                padx=10,
+                pady=5,
+                cursor="hand2"
+            )
+            btn.pack(fill="both", expand=True)
+
+            # Граница снизу (по умолчанию прозрачная)
+            border = tk.Frame(container, height=1, bg=COLORS["bg_secondary"])
+            border.pack(side="bottom", fill="x")
+
+            btn.bind("<Button-1>", lambda e, i=idx: self._on_tab_click(i))
+            btn.bind("<Enter>", lambda e, b=btn, i=idx: self._on_hover_enter(b, i))
+            btn.bind("<Leave>", lambda e, b=btn, i=idx: self._on_hover_leave(b, i))
+
+            self.tab_buttons.append((btn, border, container))
+
+    def _on_tab_click(self, idx: int):
+        """Обработка клика по вкладке"""
+        if idx in self.disabled_tabs:
+            return  # Игнорируем клики по disabled вкладкам
+        if idx != self.active_tab:
+            self.set_active_tab(idx)
+            self.on_tab_change(idx)
+
+    def set_active_tab(self, idx: int):
+        """
+        Устанавливает активную вкладку.
+
+        Args:
+            idx: Индекс вкладки
+        """
+        # Сброс предыдущей активной вкладки
+        old_btn, old_border, old_container = self.tab_buttons[self.active_tab]
+        old_btn.config(
+            bg=COLORS["bg_secondary"],
+            fg=COLORS["text_main"],
+            font=FONTS["definition"]
+        )
+        old_border.config(bg=COLORS["bg_secondary"])
+
+        # Установка новой активной вкладки
+        new_btn, new_border, new_container = self.tab_buttons[idx]
+        new_btn.config(
+            bg=COLORS["bg"],
+            fg=COLORS["text_accent"],
+            font=FONTS["definition"]  # Убрали underline
+        )
+        new_border.config(bg=COLORS["text_accent"])  # Желтая граница 1px
+
+        self.active_tab = idx
+
+    def set_tab_disabled(self, idx: int, disabled: bool):
+        """
+        Делает вкладку disabled/enabled.
+
+        Args:
+            idx: Индекс вкладки
+            disabled: True = disabled, False = enabled
+        """
+        btn, border, container = self.tab_buttons[idx]
+        if disabled:
+            self.disabled_tabs.add(idx)
+            btn.config(
+                fg=COLORS["text_faint"],
+                cursor="arrow"
+            )
+        else:
+            self.disabled_tabs.discard(idx)
+            btn.config(
+                fg=COLORS["text_main"],
+                cursor="hand2"
+            )
+
+    def _on_hover_enter(self, btn: tk.Label, idx: int):
+        """Hover эффект для неактивных вкладок"""
+        if idx != self.active_tab and idx not in self.disabled_tabs:
+            btn.config(bg="#353739")  # Немного светлее
+
+    def _on_hover_leave(self, btn: tk.Label, idx: int):
+        """Уход курсора с неактивной вкладки"""
+        if idx != self.active_tab:
+            btn.config(bg=COLORS["bg_secondary"])
+
+
+class CustomNotebook(tk.Frame):
+    """
+    Кастомный Notebook с табами и content area.
+
+    Responsibilities:
+    - Управление переключением вкладок
+    - Хранение content frames для каждой вкладки
+    - Координация между tab bar и content area
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=COLORS["bg"])
+        self.tabs_data = {}  # {idx: frame}
+        self.current_frame = None
+
+        # Создаём tab bar
+        self.tab_bar = CustomTabBar(
+            self,
+            ["NOUN", "VERB", "ADJECTIVE", "ADVERB", "OTHER"],
+            self._on_tab_change
+        )
+        self.tab_bar.pack(side="top", fill="x")
+
+        # Content area
+        self.content_area = tk.Frame(self, bg=COLORS["bg"])
+        self.content_area.pack(side="top", fill="both", expand=True)
+
+    def add_tab(self, idx: int, content_frame: tk.Frame, disabled: bool = False):
+        """
+        Добавляет вкладку.
+
+        Args:
+            idx: Индекс вкладки
+            content_frame: Frame с содержимым вкладки
+            disabled: True если вкладка пустая
+        """
+        self.tabs_data[idx] = content_frame
+        content_frame.pack_forget()  # Скрываем по умолчанию
+        if disabled:
+            self.tab_bar.set_tab_disabled(idx, True)
+
+    def show_tab(self, idx: int):
+        """
+        Показывает вкладку.
+
+        Args:
+            idx: Индекс вкладки
+        """
+        # Скрываем текущий frame
+        if self.current_frame:
+            self.current_frame.pack_forget()
+
+        # Показываем новый frame
+        self.current_frame = self.tabs_data[idx]
+        self.current_frame.pack(in_=self.content_area, fill="both", expand=True)
+
+        # Обновляем tab bar
+        self.tab_bar.set_active_tab(idx)
+
+    def _on_tab_change(self, idx: int):
+        """Callback при смене вкладки"""
+        self.show_tab(idx)
 
 
 class DictionaryRenderer:
@@ -22,7 +210,28 @@ class DictionaryRenderer:
     - Переиспользование виджетов при возможности
     - Lazy rendering для больших списков
     - Минимум вложенных frames
+    - Кастомные вкладки по частям речи
     """
+
+    # Константы для группировки частей речи
+    MAJOR_POS = {"noun", "verb", "adjective", "adverb"}
+    POS_ORDER = ["noun", "verb", "adjective", "adverb", "other"]
+    POS_LABELS = {
+        "noun": "NOUN",
+        "verb": "VERB",
+        "adjective": "ADJECTIVE",
+        "adverb": "ADVERB",
+        "other": "OTHER"
+    }
+
+    # Примеры словоформ (placeholder для lemminflect)
+    FORMS_EXAMPLES = {
+        "noun": ["Base: cat", "Plural: cats"],
+        "verb": ["Base: go", "Past: went", "Past Participle: gone", "Gerund: going"],
+        "adjective": ["Base: big", "Comparative: bigger", "Superlative: biggest"],
+        "adverb": ["Base: quickly", "Comparative: more quickly"],
+        "other": ["Form: that"]
+    }
 
     def __init__(self,
                  parent_frame: tk.Frame,
@@ -40,7 +249,7 @@ class DictionaryRenderer:
             on_synonym_click: Callback для клика по синониму
             on_synonym_enter: Callback для hover на синониме
             on_synonym_leave: Callback для leave с синонима
-            canvas_scroll: Canvas для управления прокруткой
+            canvas_scroll: Canvas для управления прокруткой (legacy, не используется)
         """
         self.parent = parent_frame
         self.get_content_width = get_content_width
@@ -48,7 +257,7 @@ class DictionaryRenderer:
         self.on_synonym_click = on_synonym_click
         self.on_synonym_enter = on_synonym_enter
         self.on_synonym_leave = on_synonym_leave
-        self.canvas_scroll = canvas_scroll
+        self.canvas_scroll = canvas_scroll  # Legacy, не используется
 
     def clear(self):
         """Очищает все виджеты из scrollable frame"""
@@ -57,7 +266,7 @@ class DictionaryRenderer:
 
     def render(self, full_data: Optional[Dict]):
         """
-        Рендерит полные словарные данные.
+        Рендерит полные словарные данные во вкладках.
 
         Args:
             full_data: Данные от dictionaryapi.dev или None
@@ -73,9 +282,8 @@ class DictionaryRenderer:
         # КРИТИЧНО: Объединяем meanings с одинаковой частью речи перед рендерингом
         merged_meanings = self._merge_meanings_by_pos(meanings)
 
-        # Рендерим объединённые meanings
-        for meaning in merged_meanings:
-            self._render_meaning(meaning)
+        # ВСЕГДА создаём вкладки
+        self._render_notebook(merged_meanings)
 
     def _merge_meanings_by_pos(self, meanings: List[Dict]) -> List[Dict]:
         """
@@ -95,11 +303,10 @@ class DictionaryRenderer:
             Список объединённых meanings с уникальными partOfSpeech
         """
         merged = {}  # {partOfSpeech: {definitions: [], synonyms: [], antonyms: []}}
-        order = []   # Сохраняем порядок первого появления
+        order = []  # Сохраняем порядок первого появления
 
         for meaning in meanings:
             pos = meaning.get("partOfSpeech", "unknown")
-
             if pos not in merged:
                 order.append(pos)
                 merged[pos] = {
@@ -134,64 +341,243 @@ class DictionaryRenderer:
 
         return result
 
-    def _render_no_data(self):
-        """Рендерит placeholder при отсутствии данных"""
+    def _group_meanings(self, merged_meanings: List[Dict]) -> Dict[str, Optional[Dict]]:
+        """
+        Группирует meanings по категориям вкладок.
+
+        Returns:
+            Dict с ключами из POS_ORDER, значения — meaning или None
+        """
+        grouped = {pos: None for pos in self.POS_ORDER}
+        other_meanings = []
+
+        for meaning in merged_meanings:
+            pos = meaning.get("partOfSpeech", "").lower()
+            if pos in self.MAJOR_POS:
+                grouped[pos] = meaning
+            else:
+                # Собираем все "другие" части речи
+                other_meanings.append(meaning)
+
+        # Если есть "другие" части речи, создаём combined meaning
+        if other_meanings:
+            grouped["other"] = {
+                "partOfSpeech": "other",
+                "meanings": other_meanings  # Список meanings для рендеринга
+            }
+
+        return grouped
+
+    def _get_first_active_index(self, merged_meanings: List[Dict]) -> int:
+        """
+        Определяет индекс первой активной вкладки.
+
+        Args:
+            merged_meanings: Список объединённых meanings
+
+        Returns:
+            Индекс первой активной вкладки
+        """
+        if not merged_meanings:
+            return 0
+
+        first_pos = merged_meanings[0].get("partOfSpeech", "").lower()
+        if first_pos in self.MAJOR_POS:
+            return self.POS_ORDER.index(first_pos)
+        else:
+            # Если первая часть речи в OTHER
+            return self.POS_ORDER.index("other")
+
+    def _render_notebook(self, merged_meanings: List[Dict]):
+        """
+        Создаёт кастомный Notebook с вкладками по частям речи.
+
+        КРИТИЧНО: Всегда создаёт все 5 вкладок в фиксированном порядке.
+
+        Args:
+            merged_meanings: Список объединённых meanings
+        """
+        # Создаём кастомный notebook
+        notebook = CustomNotebook(self.parent)
+        notebook.pack(fill="both", expand=True)
+
+        # Группируем meanings
+        grouped = self._group_meanings(merged_meanings)
+
+        # Создаём все 5 вкладок
+        for idx, pos in enumerate(self.POS_ORDER):
+            tab_frame = tk.Frame(notebook.content_area, bg=COLORS["bg"])
+
+            if grouped[pos] is not None:
+                # Активная вкладка с данными
+                self._create_active_tab_content(tab_frame, grouped[pos], pos)
+                notebook.add_tab(idx, tab_frame, disabled=False)
+            else:
+                # Disabled вкладка с placeholder
+                self._create_disabled_tab_content(tab_frame, pos)
+                notebook.add_tab(idx, tab_frame, disabled=True)
+
+        # Показываем первую активную вкладку
+        first_active_index = self._get_first_active_index(merged_meanings)
+        notebook.show_tab(first_active_index)
+
+    def _create_active_tab_content(self, tab_parent: tk.Frame, meaning: Dict, pos: str):
+        """
+        Создаёт содержимое активной вкладки.
+
+        Структура:
+        1. Блок словоформ (фиксированный)
+        2. Разделитель
+        3. Scrollable блок с определениями
+
+        Args:
+            tab_parent: Frame вкладки
+            meaning: Объединённый meaning блок
+            pos: Часть речи (для примеров форм)
+        """
+        # Блок 1: Forms (фиксированный)
+        forms_frame = tk.Frame(tab_parent, bg=COLORS["bg"])
+        forms_frame.pack(fill="x", padx=10, pady=(10, 5))
+        self._render_forms_block(forms_frame, pos)
+
+        # Separator
+        tk.Frame(tab_parent, height=1, bg=COLORS["separator"]).pack(fill="x", padx=10, pady=5)
+
+        # Блок 2: Scrollable content
+        scroll_container = tk.Frame(tab_parent, bg=COLORS["bg"])
+        scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Создаём Canvas + Scrollbar для этой вкладки
+        canvas = tk.Canvas(scroll_container, bg=COLORS["bg"], highlightthickness=0)
+        scrollbar = CustomScrollbar(scroll_container, canvas)
+        scrollable_frame = tk.Frame(canvas, bg=COLORS["bg"])
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.update)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # Привязываем mousewheel к этому canvas
+        canvas.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
+        scrollable_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
+
+        # Рендерим определения
+        if pos == "other":
+            # Для OTHER рендерим все meanings с заголовками
+            self._render_other_content(scrollable_frame, canvas, meaning)
+        else:
+            # Для обычных частей речи рендерим как обычно
+            self._render_scrollable_content(scrollable_frame, canvas, meaning)
+
+    def _create_disabled_tab_content(self, tab_parent: tk.Frame, pos: str):
+        """
+        Создаёт placeholder для пустой вкладки.
+
+        Args:
+            tab_parent: Frame вкладки
+            pos: Часть речи
+        """
         lbl = tk.Label(
-            self.parent,
-            text="No dictionary data",
+            tab_parent,
+            text=f"No {self.POS_LABELS[pos].lower()} definitions",
             font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=COLORS["text_faint"]
         )
-        lbl.pack(pady=20)
+        lbl.pack(expand=True)
 
-    def _render_meaning(self, meaning: Dict):
+    def _render_forms_block(self, parent: tk.Frame, pos: str):
         """
-        Рендерит один блок meaning (часть речи + определения + синонимы/антонимы).
+        Рендерит блок словоформ (placeholder).
 
         Args:
+            parent: Frame для рендеринга
+            pos: Часть речи
+        """
+        # Заголовок
+        lbl_title = tk.Label(
+            parent,
+            text="Forms:",
+            font=FONTS["definition"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_main"],
+            anchor="w"
+        )
+        lbl_title.pack(anchor="w", pady=(0, 5))
+
+        # Примеры форм
+        forms = self.FORMS_EXAMPLES.get(pos, ["Form: example"])
+        for form in forms:
+            lbl_form = tk.Label(
+                parent,
+                text=f"  {form}",
+                font=FONTS["definition"],
+                bg=COLORS["bg"],
+                fg=COLORS["text_main"],
+                anchor="w"
+            )
+            lbl_form.pack(anchor="w", pady=1)
+
+    def _render_scrollable_content(self, scrollable_frame: tk.Frame, canvas: tk.Canvas, meaning: Dict):
+        """
+        Рендерит определения, синонимы, антонимы внутри scrollable frame вкладки.
+
+        Args:
+            scrollable_frame: Frame для рендеринга
+            canvas: Canvas для mousewheel
             meaning: Объединённый meaning блок
         """
-        part_of_speech = meaning.get("partOfSpeech", "")
         definitions = meaning.get("definitions", [])
         synonyms = meaning.get("synonyms", [])
         antonyms = meaning.get("antonyms", [])
 
-        # Пропускаем если нет определений (защита на случай пустого блока)
-        if not definitions:
-            return
+        # Рендерим определения (сквозная нумерация, без заголовка части речи)
+        for idx, definition in enumerate(definitions, start=1):
+            self._render_definition(scrollable_frame, canvas, definition, idx)
 
-        # Заголовок части речи
-        if part_of_speech and part_of_speech != "unknown":
+        # Синонимы (объединённый список под всеми определениями)
+        if synonyms:
+            self._render_synonyms(scrollable_frame, canvas, synonyms)
+
+        # Антонимы (объединённый список под всеми определениями)
+        if antonyms:
+            self._render_antonyms(scrollable_frame, canvas, antonyms)
+
+    def _render_other_content(self, scrollable_frame: tk.Frame, canvas: tk.Canvas, other_meaning: Dict):
+        """
+        Рендерит содержимое вкладки OTHER с заголовками для каждой части речи.
+
+        Args:
+            scrollable_frame: Frame для рендеринга
+            canvas: Canvas для mousewheel
+            other_meaning: Dict с ключом "meanings" содержащим список meanings
+        """
+        meanings_list = other_meaning.get("meanings", [])
+
+        for meaning in meanings_list:
+            pos = meaning.get("partOfSpeech", "unknown")
+
+            # Заголовок части речи
             lbl_pos = tk.Label(
-                self.parent,
-                text=part_of_speech.upper(),
+                scrollable_frame,
+                text=pos.upper(),
                 font=FONTS["pos"],
                 bg=COLORS["bg"],
                 fg=COLORS["text_accent"]
             )
             lbl_pos.pack(anchor="w", padx=10, pady=(10, 5))
+            lbl_pos.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
 
-            # КРИТИЧНО: Привязываем mousewheel к заголовку части речи
-            lbl_pos.bind("<MouseWheel>", self._on_label_mousewheel)
+            # Рендерим определения этой части речи
+            self._render_scrollable_content(scrollable_frame, canvas, meaning)
 
-        # Рендерим определения (сквозная нумерация)
-        for idx, definition in enumerate(definitions, start=1):
-            self._render_definition(definition, idx)
-
-        # Синонимы (объединённый список под всеми определениями)
-        if synonyms:
-            self._render_synonyms(synonyms)
-
-        # Антонимы (объединённый список под всеми определениями)
-        if antonyms:
-            self._render_antonyms(antonyms)
-
-    def _render_definition(self, definition: Dict, index: int):
+    def _render_definition(self, parent: tk.Frame, canvas: tk.Canvas, definition: Dict, index: int):
         """
         Рендерит одно определение с примером.
 
         Args:
+            parent: Frame для рендеринга
+            canvas: Canvas для mousewheel
             definition: Блок определения от API
             index: Номер определения (сквозная нумерация)
         """
@@ -202,11 +588,11 @@ class DictionaryRenderer:
             return
 
         # Фрейм для определения
-        def_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        def_frame = tk.Frame(parent, bg=COLORS["bg"])
         def_frame.pack(fill="x", padx=10, pady=2)
 
         # КРИТИЧНО: Привязываем mousewheel к Frame определения
-        def_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+        def_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Номер определения
         lbl_num = tk.Label(
@@ -219,7 +605,7 @@ class DictionaryRenderer:
         lbl_num.pack(side="left", anchor="nw", padx=(0, 5))
 
         # КРИТИЧНО: Привязываем mousewheel к номеру определения
-        lbl_num.bind("<MouseWheel>", self._on_label_mousewheel)
+        lbl_num.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Текст определения
         lbl_def = tk.Label(
@@ -235,7 +621,7 @@ class DictionaryRenderer:
         lbl_def.pack(side="left", fill="x", expand=True, anchor="nw")
 
         # КРИТИЧНО: Привязываем mousewheel к Label определения
-        lbl_def.bind("<MouseWheel>", self._on_label_mousewheel)
+        lbl_def.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # КРИТИЧНО: Привязываем hover-перевод к Label определения
         self.bind_hover_translation(lbl_def, def_text)
@@ -243,11 +629,11 @@ class DictionaryRenderer:
         # Пример (с hover-переводом)
         if example:
             # Фрейм для примера — такой же как для определения
-            example_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+            example_frame = tk.Frame(parent, bg=COLORS["bg"])
             example_frame.pack(fill="x", padx=10, pady=(0, 5))
 
             # КРИТИЧНО: Привязываем mousewheel к Frame примера
-            example_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+            example_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
             # Пустой Label для отступа (такой же как номер определения)
             lbl_example_indent = tk.Label(
@@ -260,9 +646,9 @@ class DictionaryRenderer:
             lbl_example_indent.pack(side="left", anchor="nw", padx=(0, 5))
 
             # КРИТИЧНО: Привязываем mousewheel к отступу примера
-            lbl_example_indent.bind("<MouseWheel>", self._on_label_mousewheel)
+            lbl_example_indent.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
-            # Текст примера
+            # Текст примера (курсивом)
             lbl_example = tk.Label(
                 example_frame,
                 text=example,
@@ -279,24 +665,26 @@ class DictionaryRenderer:
             self.bind_hover_translation(lbl_example, example)
 
             # КРИТИЧНО: Привязываем mousewheel к Label примера
-            lbl_example.bind("<MouseWheel>", self._on_label_mousewheel)
+            lbl_example.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
-    def _render_synonyms(self, synonyms: List[str]):
+    def _render_synonyms(self, parent: tk.Frame, canvas: tk.Canvas, synonyms: List[str]):
         """
         Рендерит список синонимов (объединённых из всех блоков) с переносом на новые строки.
 
         Args:
+            parent: Frame для рендеринга
+            canvas: Canvas для mousewheel
             synonyms: Список синонимов без дубликатов
         """
         if not synonyms:
             return
 
         # Основной контейнер
-        syn_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        syn_frame = tk.Frame(parent, bg=COLORS["bg"])
         syn_frame.pack(fill="x", padx=10, pady=(8, 2))
 
         # КРИТИЧНО: Привязываем mousewheel к Frame синонимов
-        syn_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+        syn_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Заголовок в первой строке, первой колонке
         lbl_syn_title = tk.Label(
@@ -309,7 +697,7 @@ class DictionaryRenderer:
         lbl_syn_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
         # КРИТИЧНО: Привязываем mousewheel к заголовку
-        lbl_syn_title.bind("<MouseWheel>", self._on_label_mousewheel)
+        lbl_syn_title.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Создаём синонимы в grid для переноса
         available_width = self.get_content_width() - 100
@@ -348,29 +736,31 @@ class DictionaryRenderer:
             lbl_syn.bind("<Button-1>", lambda e, word=syn: self.on_synonym_click(word))
             lbl_syn.bind("<Enter>", lambda e, word=syn, btn=lbl_syn: self._on_synonym_hover_enter(e, word, btn))
             lbl_syn.bind("<Leave>", lambda e, btn=lbl_syn: self._on_synonym_hover_leave(e, btn))
-            lbl_syn.bind("<MouseWheel>", self._on_label_mousewheel)
+            lbl_syn.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
 
             current_width += word_width
             col += 1
 
         temp_label.destroy()
 
-    def _render_antonyms(self, antonyms: List[str]):
+    def _render_antonyms(self, parent: tk.Frame, canvas: tk.Canvas, antonyms: List[str]):
         """
         Рендерит список антонимов (объединённых из всех блоков) с переносом на новые строки.
 
         Args:
+            parent: Frame для рендеринга
+            canvas: Canvas для mousewheel
             antonyms: Список антонимов без дубликатов
         """
         if not antonyms:
             return
 
         # Основной контейнер
-        ant_frame = tk.Frame(self.parent, bg=COLORS["bg"])
+        ant_frame = tk.Frame(parent, bg=COLORS["bg"])
         ant_frame.pack(fill="x", padx=10, pady=(8, 2))
 
         # КРИТИЧНО: Привязываем mousewheel к Frame антонимов
-        ant_frame.bind("<MouseWheel>", self._on_label_mousewheel)
+        ant_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Заголовок в первой строке, первой колонке
         lbl_ant_title = tk.Label(
@@ -383,7 +773,7 @@ class DictionaryRenderer:
         lbl_ant_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
         # КРИТИЧНО: Привязываем mousewheel к заголовку
-        lbl_ant_title.bind("<MouseWheel>", self._on_label_mousewheel)
+        lbl_ant_title.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Создаём антонимы в grid для переноса
         available_width = self.get_content_width() - 100
@@ -422,12 +812,23 @@ class DictionaryRenderer:
             lbl_ant.bind("<Button-1>", lambda e, word=ant: self.on_synonym_click(word))
             lbl_ant.bind("<Enter>", lambda e, word=ant, btn=lbl_ant: self._on_synonym_hover_enter(e, word, btn))
             lbl_ant.bind("<Leave>", lambda e, btn=lbl_ant: self._on_synonym_hover_leave(e, btn))
-            lbl_ant.bind("<MouseWheel>", self._on_label_mousewheel)
+            lbl_ant.bind("<MouseWheel>", lambda e, c=canvas: self._on_tab_mousewheel(e, c))
 
             current_width += word_width
             col += 1
 
         temp_label.destroy()
+
+    def _render_no_data(self):
+        """Рендерит placeholder при отсутствии данных"""
+        lbl = tk.Label(
+            self.parent,
+            text="No dictionary data",
+            font=FONTS["definition"],
+            bg=COLORS["bg"],
+            fg=COLORS["text_faint"]
+        )
+        lbl.pack(pady=20)
 
     def _on_synonym_hover_enter(self, event, word: str, label: tk.Label):
         """
@@ -455,13 +856,15 @@ class DictionaryRenderer:
         # Возвращаем исходные цвета
         label.config(bg=COLORS["bg"], fg=COLORS["text_accent"])
 
-    def _on_label_mousewheel(self, event):
+    def _on_tab_mousewheel(self, event, canvas: tk.Canvas):
         """
-        Обработчик mousewheel для всех Label внутри scrollable frame.
-        Перенаправляет событие на canvas для корректной прокрутки.
+        Обработчик mousewheel для Canvas внутри вкладки.
+
+        Перенаправляет событие на соответствующий canvas для корректной прокрутки.
 
         Args:
             event: MouseWheel событие
+            canvas: Canvas вкладки
         """
-        self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"  # Останавливаем всплытие события

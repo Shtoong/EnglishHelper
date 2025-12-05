@@ -212,35 +212,17 @@ class MainWindow(tk.Tk):
 
     def _create_scrollable_content(self):
         """
-        Прокручиваемая область с определениями и кастомным scrollbar.
-
-        КРИТИЧНО: Этот метод вызывается ПОСЛЕ _create_vocab_slider() и _create_status_bar(),
-        чтобы scrollable content занял только оставшееся пространство между верхними
-        элементами и нижним фреймом (который уже запакован с side="bottom").
+        Прокручиваемая область.
+        ИЗМЕНЕНИЕ: Убрали внешний Canvas и Scrollbar.
+        Теперь DictionaryRenderer сам управляет скроллом внутри активной вкладки.
         """
-        scroll_container = tk.Frame(self, bg=COLORS["bg"])
-        scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
+        # Просто создаем Frame-контейнер, который занимает всё место
+        self.scrollable_frame = tk.Frame(self, bg=COLORS["bg"])
+        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.canvas_scroll = tk.Canvas(
-            scroll_container,
-            bg=COLORS["bg"],
-            highlightthickness=0
-        )
-
-        # Кастомный scrollbar
-        self.scrollbar = CustomScrollbar(scroll_container, self.canvas_scroll)
-
-        self.scrollable_frame = tk.Frame(self.canvas_scroll, bg=COLORS["bg"])
-
-        self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
-
-        self.canvas_scroll.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas_scroll.configure(yscrollcommand=self.scrollbar.update)
-        self.canvas_scroll.pack(side="left", fill="both", expand=True)
-
-        # Используем локальные bind вместо bind_all
-        self.canvas_scroll.bind("<MouseWheel>", self._on_mousewheel)
-        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
+        # Оставляем заглушки None, чтобы не ломать инициализацию DictionaryRenderer
+        self.canvas_scroll = None
+        self.scrollbar = None
 
     def _create_vocab_slider(self):
         """
@@ -501,20 +483,13 @@ class MainWindow(tk.Tk):
     # ===== DATA DISPLAY =====
 
     def update_full_data_ui(self, full_data: Optional[Dict]):
-        """
-        Обновление UI полными данными словаря.
-
-        Делегирует рендеринг DictRenderer.
-        После отрисовки принудительно обновляет scrollbar.
-        """
-        # Рендеринг через DictRenderer
+        """Обновление UI полными данными словаря."""
         if not full_data or not full_data.get("meanings"):
             self.dict_renderer.render(None)
         else:
             self.dict_renderer.render(full_data)
 
-        # КРИТИЧНО: Показываем scrollbar ТОЛЬКО после полной загрузки данных
-        self.after_idle(self.scrollbar.force_update)
+        # self.after_idle(self.scrollbar.force_update) <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
 
     # ===== IMAGE HANDLER =====
 
@@ -590,14 +565,8 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """
-        Сброс UI для нового слова.
-
-        КРИТИЧНО: Вызывается ПЕРВЫМ перед загрузкой любых данных.
-        Немедленно блокирует scrollbar чтобы он не появлялся во время загрузки.
-        """
-        # ПЕРВЫМ ДЕЛОМ: Блокируем scrollbar и скрываем его
-        self.scrollbar.block_updates()
+        """Сброс UI для нового слова."""
+        # self.scrollbar.block_updates()  <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
 
         self.lbl_word.config(text=word)
         self.lbl_rus.config(
@@ -610,17 +579,13 @@ class MainWindow(tk.Tk):
             bg=COLORS["bg"]
         )
 
-        # Очистка через менеджер
         self.dict_renderer.clear()
-
         self.sources = {"trans": "...", "img": "..."}
         self.refresh_status()
-
         self.lbl_rus.config(wraplength=self.winfo_width() - 20)
         self.update_cache_button()
 
-        # Сброс позиции скролла в начало
-        self.canvas_scroll.yview_moveto(0)
+        # self.canvas_scroll.yview_moveto(0) <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
 
     # ===== WINDOW CONTROLS =====
 
