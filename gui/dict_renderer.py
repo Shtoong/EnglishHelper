@@ -1030,7 +1030,7 @@ class DictionaryRenderer:
         # Номер определения
         lbl_num = tk.Label(
             def_frame,
-            text=f"{index}.",
+            text=f"{index}",
             font=FONTS["definition"],
             bg=COLORS["bg"],
             fg=COLORS["text_accent"]
