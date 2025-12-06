@@ -66,3 +66,9 @@ FONTS: Final[dict[str, tuple]] = {
     # === SENTENCE WINDOW ===
     "sentence_text": ("Segoe UI", 12),  # English sentence display
 }
+# ===== TRANSLATION DISPLAY CONSTRAINTS =====
+TRANSLATION_HEIGHT = 80          # Фиксированная высота в пикселях
+TRANSLATION_MIN_FONT = 12        # Минимальный размер шрифта
+TRANSLATION_MAX_FONT = 33        # Максимальный размер шрифта
+TRANSLATION_FALLBACK_FONT = 20   # Фиксированный шрифт для служебных сообщений
+TRANSLATION_MAX_LENGTH = 100     # Максимальная длина перевода (обрезка)

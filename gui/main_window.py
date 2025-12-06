@@ -120,6 +120,44 @@ class MainWindow(tk.Tk):
         """Ширина области контента с учетом padding"""
         return self.winfo_width() - self.CONTENT_PADDING
 
+    def _calculate_translation_font_size(self, text: str) -> int:
+        """
+        Подбирает размер шрифта чтобы текст влез в фиксированную высоту.
+
+        Args:
+            text: Текст перевода
+
+        Returns:
+            Размер шрифта (int) от MIN до MAX
+        """
+        from gui.styles import TRANSLATION_HEIGHT, TRANSLATION_MIN_FONT, TRANSLATION_MAX_FONT
+
+        max_width = self.content_width
+
+        # Пробуем размеры от максимального к минимальному (шаг -3)
+        for size in range(TRANSLATION_MAX_FONT, TRANSLATION_MIN_FONT - 1, -3):
+            # Временный невидимый Label для измерения
+            temp_label = tk.Label(
+                self,
+                text=text,
+                font=("Segoe UI", size),
+                wraplength=max_width,
+                justify='center',
+                bg=COLORS["bg"]
+            )
+            temp_label.pack()
+            temp_label.update_idletasks()  # Пересчёт размеров
+
+            actual_height = temp_label.winfo_reqheight()
+            temp_label.destroy()
+
+            # Если влезает - возвращаем
+            if actual_height <= TRANSLATION_HEIGHT:
+                return size
+
+        # Минимальный размер
+        return TRANSLATION_MIN_FONT
+
     def _init_ui(self):
         """
         Инициализация всех UI элементов.
@@ -167,7 +205,7 @@ class MainWindow(tk.Tk):
     def _create_top_bar(self):
         """Верхняя панель: слово по центру, крестик поверх справа"""
         top_bar = tk.Frame(self, bg=COLORS["bg"], height=35)
-        top_bar.pack(fill="x", pady=(0, 5))
+        top_bar.pack(fill="x", pady=(5, 5))
         top_bar.pack_propagate(False)
 
         # Слово - центрируется по всей ширине окна
@@ -175,10 +213,11 @@ class MainWindow(tk.Tk):
             top_bar,
             text="English Helper",
             font_key="header",
-            fg_key="text_header",
+            fg_key="text_main",
             wraplength=350
         )
-        self.lbl_word.pack(expand=True, padx=(10, 40))
+        #self.lbl_word.pack(expand=True, padx=(10, 40))
+        self.lbl_word.pack(expand=True)
 
         # Крестик - абсолютное позиционирование поверх
         self.btn_close = self._create_label(
@@ -191,22 +230,36 @@ class MainWindow(tk.Tk):
         self.btn_close.config(font=FONTS["close_btn"])
         self.btn_close.place(relx=1.0, rely=0.5, anchor='e', x=-10)
         self.btn_close.bind("<Button-1>", lambda e: self.close_app())
+        self.btn_close.lift()
 
     def _create_word_header(self):
         """Не используется - слово теперь в top_bar"""
         pass
 
     def _create_translation_display(self):
-        """Область отображения перевода"""
-        self.lbl_rus = self._create_label(
+        """Область отображения перевода с фиксированной высотой"""
+        from gui.styles import TRANSLATION_HEIGHT
+
+        # Контейнер с фиксированной высотой
+        self.translation_container = tk.Frame(
             self,
-            text="Ready",
-            fg_key="text_accent",
-            wraplength=self.DEFAULT_WRAPLENGTH,
-            justify="center"
+            bg=COLORS["bg"],
+            height=TRANSLATION_HEIGHT
         )
-        self.lbl_rus.config(font=FONTS["translation"])
-        self.lbl_rus.pack(anchor="center", padx=10, pady=(5, 10))
+        self.translation_container.pack(fill='x', padx=10, pady=(0, 10))
+        self.translation_container.pack_propagate(False)  # Запрещаем изменение высоты!
+
+        # Label внутри контейнера
+        self.lbl_rus = tk.Label(
+            self.translation_container,
+            text="Ready",
+            fg=COLORS["text_accent"],
+            bg=COLORS["bg"],
+            wraplength=self.DEFAULT_WRAPLENGTH,
+            justify='center',
+            font=("Segoe UI", 20)  # Фиксированный для "Ready"
+        )
+        self.lbl_rus.pack(expand=True)  # Центрируем вертикально
 
     def _create_image_container(self):
         """Контейнер для изображения"""
@@ -548,26 +601,44 @@ class MainWindow(tk.Tk):
         self.lbl_status.config(text=self.status_text)
 
     def update_trans_ui(self, data: Optional[Dict], source: str):
-        """Обновление перевода с fallback"""
+        """Обновление перевода с fallback и динамическим шрифтом"""
+        from gui.styles import TRANSLATION_FALLBACK_FONT, TRANSLATION_MAX_LENGTH
+
         if data and data.get("rus"):
+            translation_text = data["rus"]
+
+            # Обрезка длинного текста
+            if len(translation_text) > TRANSLATION_MAX_LENGTH:
+                translation_text = translation_text[:TRANSLATION_MAX_LENGTH - 3] + "..."
+
+            # Подбираем размер шрифта
+            font_size = self._calculate_translation_font_size(translation_text)
+
             self.lbl_rus.config(
-                text=data["rus"],
-                fg=COLORS["text_accent"]
+                text=translation_text,
+                fg=COLORS["text_accent"],
+                font=("Segoe UI", font_size)  # Динамический размер!
             )
             self.sources["trans"] = source
         else:
+            # Fallback
             current_word = self.lbl_word.cget("text")
             if current_word and current_word != "English Helper":
-                self.lbl_rus.config(
-                    text=f"({current_word})",
-                    fg=COLORS["text_faint"]
-                )
+                fallback_text = f"({current_word})"
+                # Подбираем шрифт для (word) - может быть длинное слово!
+                font_size = self._calculate_translation_font_size(fallback_text)
             else:
-                self.lbl_rus.config(
-                    text="No translation",
-                    fg=COLORS["text_faint"]
-                )
+                fallback_text = "No translation"
+                # Для "No translation" - фиксированный 20pt
+                font_size = TRANSLATION_FALLBACK_FONT
+
+            self.lbl_rus.config(
+                text=fallback_text,
+                fg=COLORS["text_faint"],
+                font=("Segoe UI", font_size)
+            )
             self.sources["trans"] = "—"
+
         self.refresh_status()
 
     def reset_ui(self, word: str):
@@ -575,10 +646,14 @@ class MainWindow(tk.Tk):
         # self.scrollbar.block_updates()  <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
 
         self.lbl_word.config(text=word)
+        from gui.styles import TRANSLATION_FALLBACK_FONT
+
         self.lbl_rus.config(
             text="Loading...",
-            fg=COLORS["text_accent"]
+            fg=COLORS["text_accent"],
+            font=("Segoe UI", TRANSLATION_FALLBACK_FONT)  # Фиксированный 20pt
         )
+
         self.img_container.config(
             image="",
             text="",
@@ -597,6 +672,8 @@ class MainWindow(tk.Tk):
 
     def resize_window(self, dx: int, dy: int):
         """Изменение размера окна"""
+        from gui.styles import TRANSLATION_FALLBACK_FONT
+
         current_x = self.winfo_x()
         current_y = self.winfo_y()
 
@@ -604,8 +681,21 @@ class MainWindow(tk.Tk):
         new_h = max(self.MIN_WINDOW_HEIGHT, self.winfo_height() + dy)
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
+
+        # Обновляем wraplength
         self.lbl_rus.config(wraplength=new_w - 20)
-        self.lbl_word.config(wraplength=new_w - 50)  # ← ДОБАВИТЬ ЭТУ СТРОКУ!
+        self.lbl_word.config(wraplength=new_w - 50)
+
+        # Пересчитываем шрифт перевода при resize (только для реального перевода)
+        current_text = self.lbl_rus.cget("text")
+        service_messages = ["Ready", "Loading...", "No translation"]
+        is_service = any(msg in current_text for msg in service_messages)
+
+        if current_text and not is_service:
+            # Пересчитываем размер
+            font_size = self._calculate_translation_font_size(current_text)
+            self.lbl_rus.config(font=("Segoe UI", font_size))
+
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
