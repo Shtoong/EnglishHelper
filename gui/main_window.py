@@ -80,6 +80,7 @@ class MainWindow(tk.Tk):
         self.dragging_allowed = False
         self.trans_cache = OrderedDict()  # LRU cache для hover-переводов
         self.hover_timer = None
+        self.current_image_word = None
 
         # Флаги для умного управления popup слайдера
         self._slider_was_moved = False  # Отслеживает факт движения ползунка
@@ -107,7 +108,8 @@ class MainWindow(tk.Tk):
             self.on_synonym_click,
             self._on_synonym_enter,
             self._on_synonym_leave,
-            self.canvas_scroll
+            self.canvas_scroll,
+            self
         )
 
         # Финальная настройка
@@ -570,10 +572,19 @@ class MainWindow(tk.Tk):
                 )
                 self.img_container.image = tki
                 self.sources["img"] = source
+
+                # ← НОВОЕ: Сохраняем слово из имени файла
+                import os
+                filename = os.path.basename(path)
+                word_from_path = os.path.splitext(filename)[0]
+                self.current_image_word = word_from_path
+
             except Exception:
                 self._show_no_image_placeholder()
+                self.current_image_word = None
         else:
             self._show_no_image_placeholder()
+            self.current_image_word = None
 
         self.refresh_status()
 
@@ -588,8 +599,9 @@ class MainWindow(tk.Tk):
             bg=COLORS["bg"]
         )
         self.sources["img"] = "—"
+        self.current_image_word = None
 
-    # ===== STATUS =====
+        # ===== STATUS =====
 
     @property
     def status_text(self) -> str:

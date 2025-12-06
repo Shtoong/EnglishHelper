@@ -290,11 +290,19 @@ class CustomNotebook(tk.Frame):
     - Координация между tab bar и content area
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, pos_order: List[str], on_tab_switch_callback=None):
+        """
+        Args:
+            parent: Родительский frame
+            pos_order: Список частей речи в порядке вкладок
+            on_tab_switch_callback: Callback(pos: str) при смене вкладки
+        """
         super().__init__(parent, bg=COLORS["bg"])
 
         self.tabs_data = {}  # {idx: frame}
         self.current_frame = None
+        self.pos_order = pos_order
+        self.on_tab_switch_callback = on_tab_switch_callback
 
         # Создаём tab bar
         self.tab_bar = CustomTabBar(
@@ -345,6 +353,11 @@ class CustomNotebook(tk.Frame):
         """Callback при смене вкладки"""
         self.show_tab(idx)
 
+        # Вызываем callback для обновления картинки
+        if self.on_tab_switch_callback:
+            pos = self.pos_order[idx]
+            self.on_tab_switch_callback(pos)
+
 
 class DictionaryRenderer:
     """
@@ -376,7 +389,8 @@ class DictionaryRenderer:
                  on_synonym_click: Callable[[str], None],
                  on_synonym_enter: Callable,
                  on_synonym_leave: Callable,
-                 canvas_scroll: tk.Canvas):
+                 canvas_scroll: tk.Canvas,
+                 main_window):
         """
         Args:
             parent_frame: Scrollable frame для рендеринга
@@ -386,6 +400,7 @@ class DictionaryRenderer:
             on_synonym_enter: Callback для hover на синониме
             on_synonym_leave: Callback для leave с синонима
             canvas_scroll: Canvas для управления прокруткой (legacy, не используется)
+            main_window: Ссылка на MainWindow для обновления картинки
         """
         self.parent = parent_frame
         self.get_content_width = get_content_width
@@ -394,6 +409,7 @@ class DictionaryRenderer:
         self.on_synonym_enter = on_synonym_enter
         self.on_synonym_leave = on_synonym_leave
         self.canvas_scroll = canvas_scroll
+        self.main_window = main_window
 
         self.current_word = ""  # Текущее слово для lemminflect
 
@@ -401,6 +417,103 @@ class DictionaryRenderer:
         """Очищает все виджеты из scrollable frame"""
         for widget in self.parent.winfo_children():
             widget.destroy()
+
+    def _get_base_form_for_pos(self, word: str, pos: str) -> str:
+        """
+        Получает базовую форму слова для части речи из словоформ.
+
+        Args:
+            word: Исходное слово
+            pos: Часть речи (noun, verb, adjective, adverb, other)
+
+        Returns:
+            Базовая форма (первая в списке forms) или исходное слово
+        """
+        if pos == "other":
+            return word
+
+        forms = get_word_forms(word, pos)
+        if forms:
+            first_form = forms[0]
+            parts = first_form.split(": ", 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+
+        return word
+
+    def _load_image_for_word(self, word: str):
+        """
+        Запускает загрузку картинки для слова в фоновом потоке.
+        Проверяет кэш перед загрузкой.
+
+        Args:
+            word: Слово для поиска картинки
+        """
+        import threading
+        from network import fetch_image, get_image_path
+        import os
+
+        # Быстрая проверка кэша в главном потоке
+        cached_path = get_image_path(word)
+        if os.path.exists(cached_path):
+            # Есть в кэше → показываем сразу
+            self.main_window.after(
+                0,
+                lambda: self.main_window.update_img_ui(cached_path, "Cache")
+            )
+            return
+
+        # Нет в кэше → загружаем в фоне
+        def worker():
+            image_path, source = fetch_image(word)
+            self.main_window.after(
+                0,
+                lambda: self.main_window.update_img_ui(image_path, source)
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _get_first_active_pos(self, merged_meanings: List[Dict], grouped: Dict[str, Optional[Dict]]) -> str:
+        """
+        Определяет часть речи первой активной вкладки.
+
+        Args:
+            merged_meanings: Meanings от API
+            grouped: Сгруппированные meanings (включая lemminflect_only)
+
+        Returns:
+            Часть речи первой активной вкладки (noun, verb, adjective, adverb, other)
+        """
+        # Приоритет 1: Первая часть речи от API
+        if merged_meanings:
+            first_pos = merged_meanings[0].get("partOfSpeech", "").lower()
+            if first_pos in self.MAJOR_POS:
+                return first_pos
+
+        # Приоритет 2: Первая активная вкладка в порядке NOUN → VERB → ADJ → ADV → OTHER
+        for pos in self.POS_ORDER:
+            if grouped[pos] is not None:
+                return pos
+
+        # Fallback (не должно произойти)
+        return "other"
+
+    def _on_tab_switched(self, pos: str):
+        """
+        Callback при переключении вкладки → обновление картинки.
+
+        Args:
+            pos: Часть речи активной вкладки (noun, verb, adjective, adverb, other)
+        """
+        # Получаем базовую форму для этой части речи
+        image_word = self._get_base_form_for_pos(self.current_word, pos)
+
+        # Проверяем: картинка для этого слова уже показана?
+        if self.main_window.current_image_word == image_word:
+            return  # Уже правильная картинка, ничего не делаем
+
+        # Загружаем картинку для нового слова
+        self._load_image_for_word(image_word)
 
     def render(self, full_data: Optional[Dict]):
         """
@@ -414,6 +527,7 @@ class DictionaryRenderer:
         # КРИТИЧНО: Если full_data = None, показываем no data
         if not full_data:
             self._render_no_data()
+            self._load_image_for_word(self.current_word)
             return
 
         self.current_word = full_data.get("word", "")
@@ -428,7 +542,18 @@ class DictionaryRenderer:
         # КРИТИЧНО: Если ни API, ни lemminflect не дали данных → no data
         if not merged_meanings and not lemminflect_parts:
             self._render_no_data()
+            self._load_image_for_word(self.current_word)
             return
+
+        # Группируем meanings
+        grouped = self._group_meanings(merged_meanings, lemminflect_parts)
+
+        # Определяем первую активную вкладку
+        first_active_pos = self._get_first_active_pos(merged_meanings, grouped)
+
+        # Загружаем картинку для базовой формы первой активной вкладки
+        image_word = self._get_base_form_for_pos(self.current_word, first_active_pos)
+        self._load_image_for_word(image_word)
 
         # Рендерим notebook (с данными от API и/или lemminflect)
         self._render_notebook(merged_meanings, lemminflect_parts)
@@ -605,8 +730,12 @@ class DictionaryRenderer:
             merged_meanings: Список объединённых meanings
             lemminflect_parts: Части речи от lemminflect
         """
-        # Создаём кастомный notebook
-        notebook = CustomNotebook(self.parent)
+        # Создаём кастомный notebook с callback для переключения
+        notebook = CustomNotebook(
+            self.parent,
+            pos_order=self.POS_ORDER,
+            on_tab_switch_callback=self._on_tab_switched
+        )
         notebook.pack(fill="both", expand=True)
 
         # Группируем meanings

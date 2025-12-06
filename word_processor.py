@@ -71,7 +71,7 @@ class WordProcessor:
 
     def _process_word_parallel(self, word: str, force: bool = False):
         """
-        Параллельная обработка слова: перевод + изображение + словарь.
+        Параллельная обработка слова: перевод + словарь.
 
         Логика:
         1. Проверка "слишком простое" на основе vocab level (если не force)
@@ -112,13 +112,14 @@ class WordProcessor:
                 daemon=True
             ).start()
 
-        # Параллельные загрузки изображения и словарных данных
-        threading.Thread(
-            target=self._worker_image,
-            args=(cleaned_word,),
-            daemon=True
-        ).start()
+        # ❌ УДАЛЕНО: Загрузка картинки (теперь в dict_renderer.render())
+        # threading.Thread(
+        #     target=self._worker_image,
+        #     args=(cleaned_word,),
+        #     daemon=True
+        # ).start()
 
+        # Параллельная загрузка словарных данных
         threading.Thread(
             target=self._worker_full_dictionary,
             args=(cleaned_word,),
@@ -143,20 +144,14 @@ class WordProcessor:
             )
         )
 
-    def _worker_image(self, word: str):
-        """
-        Worker для загрузки изображения.
-
-        Args:
-            word: Очищенное слово
-        """
-        image_path, source = fetch_image(word)
-
-        # Обновляем UI в главном потоке
-        self.main_window.after(
-            0,
-            lambda: self.main_window.update_img_ui(image_path, source)
-        )
+    # ❌ УДАЛЁН ВЕСЬ МЕТОД:
+    # def _worker_image(self, word: str):
+    #     """Worker для загрузки изображения."""
+    #     image_path, source = fetch_image(word)
+    #     self.main_window.after(
+    #         0,
+    #         lambda: self.main_window.update_img_ui(image_path, source)
+    #     )
 
     def _worker_full_dictionary(self, word: str):
         """
