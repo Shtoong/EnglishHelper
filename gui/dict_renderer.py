@@ -185,7 +185,7 @@ class CustomTabBar(tk.Frame):
         for idx, tab_name in enumerate(self.tabs):
             # Контейнер для вкладки с нижней границей
             container = tk.Frame(self, bg=COLORS["bg_secondary"], highlightthickness=0)
-            container.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=(1, 0))
+            container.pack(side="left", fill="both", expand=True, padx=(3, 0), pady=(0, 0))
 
             btn = tk.Label(
                 container,
@@ -998,7 +998,7 @@ class DictionaryRenderer:
 
                 # Разделитель после Forms
                 tk.Frame(scrollable_frame, height=1, bg=COLORS["separator"]).pack(
-                    fill="x", padx=10, pady=5
+                    fill="x", padx=10, pady=0
                 )
 
             # Рендерим определения этой части речи
@@ -1022,7 +1022,7 @@ class DictionaryRenderer:
 
         # Фрейм для определения
         def_frame = tk.Frame(parent, bg=COLORS["bg"])
-        def_frame.pack(fill="x", padx=10, pady=2)
+        def_frame.pack(fill="x", padx=0, pady=0)
 
         # КРИТИЧНО: Привязываем mousewheel к Frame определения
         def_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
@@ -1063,7 +1063,7 @@ class DictionaryRenderer:
         if example:
             # Фрейм для примера — такой же как для определения
             example_frame = tk.Frame(parent, bg=COLORS["bg"])
-            example_frame.pack(fill="x", padx=10, pady=(0, 5))
+            example_frame.pack(fill="x", padx=0, pady=(0, 0))
 
             # КРИТИЧНО: Привязываем mousewheel к Frame примера
             example_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
@@ -1114,7 +1114,7 @@ class DictionaryRenderer:
 
         # Основной контейнер
         syn_frame = tk.Frame(parent, bg=COLORS["bg"])
-        syn_frame.pack(fill="x", padx=10, pady=(8, 2))
+        syn_frame.pack(fill="x", padx=0, pady=(5, 0))
 
         # КРИТИЧНО: Привязываем mousewheel к Frame синонимов
         syn_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
@@ -1190,7 +1190,7 @@ class DictionaryRenderer:
 
         # Основной контейнер
         ant_frame = tk.Frame(parent, bg=COLORS["bg"])
-        ant_frame.pack(fill="x", padx=10, pady=(8, 2))
+        ant_frame.pack(fill="x", padx=0, pady=(5, 0))
 
         # КРИТИЧНО: Привязываем mousewheel к Frame антонимов
         ant_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))

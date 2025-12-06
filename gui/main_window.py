@@ -4,7 +4,7 @@
 Отображает:
 - Заголовок слова
 - Перевод на русский
-- Изображение ассоциации
+- Изображение ассоциации (фиксированная высота 20% окна)
 - Прокручиваемый список определений и примеров
 - Слайдер уровня словаря с popup превью
 - Статус бар с кнопками управления
@@ -16,7 +16,7 @@ Architecture:
 """
 
 import tkinter as tk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import keyboard
 import threading
 import time
@@ -47,8 +47,11 @@ class MainWindow(tk.Tk):
     """
 
     # ===== LAYOUT КОНСТАНТЫ =====
-    IMAGE_MAX_HEIGHT = 250
-    IMAGE_PADDING = 40
+    # 📍 НАСТРОЙКА КАРТИНКИ (меняй здесь в будущем):
+    IMAGE_CONTAINER_HEIGHT_PERCENT = 0.20  # % от высоты окна
+    IMAGE_CONTAINER_PADDING_X = 5  # Отступ слева/справа
+    IMAGE_CONTAINER_PADDING_Y = 0   # Отступ сверху/снизу
+
     CONTENT_PADDING = 60
     DEFAULT_WRAPLENGTH = 380
     MIN_WINDOW_WIDTH = 300
@@ -83,15 +86,14 @@ class MainWindow(tk.Tk):
         self.current_image_word = None
 
         # Флаги для умного управления popup слайдера
-        self._slider_was_moved = False  # Отслеживает факт движения ползунка
-        self._popup_was_open_before_click = False  # Запоминает состояние popup ДО клика
+        self._slider_was_moved = False
+        self._popup_was_open_before_click = False
 
         # Callbacks устанавливаются из main.pyw
         self.search_callback = None
         self.clipboard_callback = None
 
         # ===== СОЗДАНИЕ КОМПОНЕНТОВ =====
-        # Эти компоненты создаются ДО _init_ui т.к. нужны для инициализации менеджеров
         self.sent_window = SentenceWindow(self)
         self.tooltip = TranslationTooltip(self)
         self.popup = VocabPopup(self)
@@ -100,7 +102,6 @@ class MainWindow(tk.Tk):
         self._init_ui()
 
         # ===== СОЗДАНИЕ МЕНЕДЖЕРОВ =====
-        # Создаются ПОСЛЕ _init_ui т.к. требуют ссылки на виджеты
         self.dict_renderer = DictionaryRenderer(
             self.scrollable_frame,
             lambda: self.content_width,
@@ -138,7 +139,7 @@ class MainWindow(tk.Tk):
 
         # Пробуем размеры от максимального к минимальному (шаг -3)
         for size in range(TRANSLATION_MAX_FONT, TRANSLATION_MIN_FONT - 1, -3):
-            # Временный невидимый Label для измерения
+            # Временный Label для измерения (скрыт за экраном)
             temp_label = tk.Label(
                 self,
                 text=text,
@@ -147,17 +148,16 @@ class MainWindow(tk.Tk):
                 justify='center',
                 bg=COLORS["bg"]
             )
-            temp_label.pack()
-            temp_label.update_idletasks()  # Пересчёт размеров
+            # КРИТИЧНО: НЕ используем pack()! place() за границами экрана:
+            temp_label.place(x=-9999, y=-9999)
+            temp_label.update_idletasks()
 
             actual_height = temp_label.winfo_reqheight()
             temp_label.destroy()
 
-            # Если влезает - возвращаем
             if actual_height <= TRANSLATION_HEIGHT:
                 return size
 
-        # Минимальный размер
         return TRANSLATION_MIN_FONT
 
     def _init_ui(self):
@@ -165,17 +165,13 @@ class MainWindow(tk.Tk):
         Инициализация всех UI элементов.
 
         КРИТИЧНО: Порядок создания элементов важен для правильного layout:
-        1. Верхние элементы (top bar, header, translation, image, separator)
+        1. Верхние элементы (top bar, translation, image)
         2. BOTTOM FRAME (слайдер + кнопки) - создаётся РАНЬШЕ scrollable content
         3. Scrollable content - заполняет оставшееся пространство
-
-        Это предотвращает выталкивание bottom_frame за границы окна при показе картинки.
         """
         self._create_top_bar()
-        #self._create_word_header()
         self._create_translation_display()
         self._create_image_container()
-        self._create_separator()
 
         # КРИТИЧНО: Создаём bottom_frame ДО scrollable_content
         self._create_vocab_slider()
@@ -195,22 +191,12 @@ class MainWindow(tk.Tk):
         defaults.update(kwargs)
         return tk.Label(parent, text=text, **defaults)
 
-    def _create_separator(self, width: int = 360) -> None:
-        """Создаёт горизонтальный разделитель"""
-        tk.Frame(
-            self,
-            height=1,
-            bg=COLORS["separator"],
-            width=width
-        ).pack(pady=5)
-
     def _create_top_bar(self):
         """Верхняя панель: слово по центру, крестик поверх справа"""
         top_bar = tk.Frame(self, bg=COLORS["bg"], height=35)
-        top_bar.pack(fill="x", pady=(5, 5))
+        top_bar.pack(fill="x", pady=(10, 0))
         top_bar.pack_propagate(False)
 
-        # Слово - центрируется по всей ширине окна
         self.lbl_word = self._create_label(
             top_bar,
             text="English Helper",
@@ -218,10 +204,8 @@ class MainWindow(tk.Tk):
             fg_key="text_main",
             wraplength=350
         )
-        #self.lbl_word.pack(expand=True, padx=(10, 40))
         self.lbl_word.pack(expand=True)
 
-        # Крестик - абсолютное позиционирование поверх
         self.btn_close = self._create_label(
             top_bar,
             text="✕",
@@ -234,24 +218,18 @@ class MainWindow(tk.Tk):
         self.btn_close.bind("<Button-1>", lambda e: self.close_app())
         self.btn_close.lift()
 
-    def _create_word_header(self):
-        """Не используется - слово теперь в top_bar"""
-        pass
-
     def _create_translation_display(self):
         """Область отображения перевода с фиксированной высотой"""
         from gui.styles import TRANSLATION_HEIGHT
 
-        # Контейнер с фиксированной высотой
         self.translation_container = tk.Frame(
             self,
             bg=COLORS["bg"],
             height=TRANSLATION_HEIGHT
         )
-        self.translation_container.pack(fill='x', padx=10, pady=(0, 10))
-        self.translation_container.pack_propagate(False)  # Запрещаем изменение высоты!
+        self.translation_container.pack(fill='x', padx=5, pady=(0, 0))
+        self.translation_container.pack_propagate(False)
 
-        # Label внутри контейнера
         self.lbl_rus = tk.Label(
             self.translation_container,
             text="Ready",
@@ -259,39 +237,55 @@ class MainWindow(tk.Tk):
             bg=COLORS["bg"],
             wraplength=self.DEFAULT_WRAPLENGTH,
             justify='center',
-            font=("Segoe UI", 20)  # Фиксированный для "Ready"
+            font=("Segoe UI", 20)
         )
-        self.lbl_rus.pack(expand=True)  # Центрируем вертикально
+        self.lbl_rus.pack(expand=True)
 
     def _create_image_container(self):
-        """Контейнер для изображения"""
-        self.img_container = tk.Label(
+        """
+        Контейнер для изображения с фиксированной высотой = 25% окна.
+
+        📍 НАСТРОЙКА ВНЕШНЕГО ВИДА:
+        - Высота: IMAGE_CONTAINER_HEIGHT_PERCENT (25%)
+        - Padding X: IMAGE_CONTAINER_PADDING_X (20px)
+        - Padding Y: IMAGE_CONTAINER_PADDING_Y (5px)
+        """
+        # КРИТИЧНО: Используем update_idletasks() чтобы получить реальную высоту окна
+        self.update_idletasks()
+
+        # Вычисляем высоту контейнера: 25% от текущей высоты окна
+        container_height = int(self.winfo_height() * self.IMAGE_CONTAINER_HEIGHT_PERCENT)
+
+        # Создаём Frame-контейнер с фиксированной высотой
+        self.img_frame = tk.Frame(
             self,
+            bg=COLORS["bg"],
+            height=container_height
+        )
+        self.img_frame.pack(
+            fill="x",
+            padx=self.IMAGE_CONTAINER_PADDING_X,
+            pady=self.IMAGE_CONTAINER_PADDING_Y
+        )
+        self.img_frame.pack_propagate(False)  # КРИТИЧНО: запрещаем изменение высоты!
+
+        # Label внутри для картинки (будет центрироваться)
+        self.img_container = tk.Label(
+            self.img_frame,
             bg=COLORS["bg"]
         )
-        self.img_container.pack(pady=5)
+        self.img_container.pack(expand=True)
 
     def _create_scrollable_content(self):
-        """
-        Прокручиваемая область.
-        ИЗМЕНЕНИЕ: Убрали внешний Canvas и Scrollbar.
-        Теперь DictionaryRenderer сам управляет скроллом внутри активной вкладки.
-        """
-        # Просто создаем Frame-контейнер, который занимает всё место
+        """Прокручиваемая область"""
         self.scrollable_frame = tk.Frame(self, bg=COLORS["bg"])
-        self.scrollable_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=0, pady=1)
 
-        # Оставляем заглушки None, чтобы не ломать инициализацию DictionaryRenderer
         self.canvas_scroll = None
         self.scrollbar = None
 
     def _create_vocab_slider(self):
-        """
-        Слайдер уровня словаря.
-
-        КРИТИЧНО: Создаётся с side="bottom" ДО _create_scrollable_content(),
-        чтобы всегда оставаться внизу окна независимо от размера картинки.
-        """
+        """Слайдер уровня словаря"""
         self.bottom_frame = tk.Frame(self, bg=COLORS["bg"])
         self.bottom_frame.pack(side="bottom", fill="x", padx=0, pady=0)
 
@@ -307,7 +301,6 @@ class MainWindow(tk.Tk):
 
         self.vocab_var = tk.IntVar(value=int(cfg.get("USER", "VocabLevel")))
 
-        # Кнопки управления
         btn_minus = self._create_label(
             slider_area,
             text="<",
@@ -318,7 +311,6 @@ class MainWindow(tk.Tk):
         btn_minus.pack(side="left", padx=2)
         btn_minus.bind("<Button-1>", lambda e: self.change_level(-1))
 
-        # Слайдер
         self.scale = tk.Scale(
             slider_area,
             from_=0,
@@ -345,7 +337,6 @@ class MainWindow(tk.Tk):
         btn_plus.pack(side="left", padx=2)
         btn_plus.bind("<Button-1>", lambda e: self.change_level(1))
 
-        # Отображение значения
         self.lbl_lvl_val = self._create_label(
             slider_area,
             text=str(self.vocab_var.get()),
@@ -356,15 +347,10 @@ class MainWindow(tk.Tk):
         self.scale.config(command=lambda v: self.lbl_lvl_val.config(text=v))
 
     def _create_status_bar(self):
-        """
-        Нижняя панель статуса с кнопками управления.
-
-        КРИТИЧНО: Создаётся внутри bottom_frame, который уже запакован с side="bottom".
-        """
+        """Нижняя панель статуса с кнопками управления"""
         status_bar = tk.Frame(self.bottom_frame, bg=COLORS["bg"])
         status_bar.pack(side="bottom", fill="x", pady=2)
 
-        # Resize grip
         self.grip = ResizeGrip(
             status_bar,
             self.resize_window,
@@ -374,7 +360,6 @@ class MainWindow(tk.Tk):
         )
         self.grip.pack(side="right", anchor="se")
 
-        # Статус
         self.lbl_status = tk.Label(
             status_bar,
             text="Waiting...",
@@ -384,7 +369,6 @@ class MainWindow(tk.Tk):
         )
         self.lbl_status.pack(side="right", padx=5)
 
-        # Кнопки-переключатели
         self.btn_toggle_sent = ToggleButton(
             status_bar,
             "Sentence",
@@ -401,7 +385,6 @@ class MainWindow(tk.Tk):
         )
         self.btn_toggle_pronounce.pack(side="left", padx=(0, 5))
 
-        # Кнопка очистки кэша
         self.btn_cache = ActionButton(
             status_bar,
             "Cache --",
@@ -411,12 +394,10 @@ class MainWindow(tk.Tk):
 
     def _bind_events(self):
         """Привязка событий"""
-        # Перемещение окна
         self.bind("<Button-1>", self.start_move)
         self.bind("<B1-Motion>", self.do_move)
         self.bind("<ButtonRelease-1>", self.stop_move)
 
-        # Popup слайдера - используем три отдельных обработчика для умного управления
         self.scale.bind("<ButtonPress-1>", self.on_slider_press)
         self.scale.bind("<B1-Motion>", self.on_slider_motion)
         self.scale.bind("<ButtonRelease-1>", self.on_slider_release)
@@ -466,17 +447,6 @@ class MainWindow(tk.Tk):
 
         self.after(0, lambda: self.update_cache_button())
 
-    # ===== SCROLLBAR LOGIC =====
-
-    def _on_mousewheel(self, event):
-        """Прокрутка колёсиком мыши"""
-        self.canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        return "break"  # КРИТИЧНО: Останавливаем всплытие события
-
-    def _on_frame_configure(self, event):
-        """Обновление scrollregion при изменении размера scrollable_frame"""
-        self.canvas_scroll.configure(scrollregion=self.canvas_scroll.bbox("all"))
-
     # ===== TOOLTIP LOGIC =====
 
     def _bind_hover_translation(self, widget: tk.Widget, text: str):
@@ -517,7 +487,6 @@ class MainWindow(tk.Tk):
         """Worker для загрузки перевода"""
         trans = fetch_sentence_translation(text)
         if trans:
-            # LRU cache: удаляем самый старый элемент при переполнении
             if len(self.trans_cache) >= self.MAX_TRANS_CACHE_SIZE:
                 self.trans_cache.popitem(last=False)
 
@@ -544,36 +513,50 @@ class MainWindow(tk.Tk):
     # ===== DATA DISPLAY =====
 
     def update_full_data_ui(self, full_data: Optional[Dict]):
-        """Обновление UI полными данными словаря."""
+        """Обновление UI полными данными словаря"""
         if not full_data:
             self.dict_renderer.render(None)
         else:
             self.dict_renderer.render(full_data)
 
-        # self.after_idle(self.scrollbar.force_update) <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
-
     # ===== IMAGE HANDLER =====
 
     def update_img_ui(self, path: Optional[str], source: str):
-        """Обновление изображения с компактным placeholder"""
+        """
+        Обновление изображения с ресайзом под фиксированную высоту.
+
+        Логика:
+        - Вычисляем целевую высоту (25% окна - padding)
+        - Ресайзим с сохранением пропорций
+        - Центрируем в контейнере
+        """
         if path:
             try:
                 pil_img = Image.open(path)
 
-                max_width = self.winfo_width() - self.IMAGE_PADDING
-                pil_img.thumbnail((max_width, self.IMAGE_MAX_HEIGHT), Image.Resampling.BILINEAR)
+                # Вычисляем целевую высоту (25% окна - padding)
+                target_height = int(self.winfo_height() * self.IMAGE_CONTAINER_HEIGHT_PERCENT) - 20
+
+                # Вычисляем ширину с сохранением aspect ratio
+                aspect_ratio = pil_img.width / pil_img.height
+                target_width = int(target_height * aspect_ratio)
+
+                # Ресайз с сохранением пропорций
+                pil_img = pil_img.resize(
+                    (target_width, target_height),
+                    Image.Resampling.LANCZOS
+                )
 
                 tki = ImageTk.PhotoImage(pil_img)
                 self.img_container.config(
                     image=tki,
                     text="",
-                    compound="center",
                     bg=COLORS["bg"]
                 )
                 self.img_container.image = tki
                 self.sources["img"] = source
 
-                # ← НОВОЕ: Сохраняем слово из имени файла
+                # Сохраняем слово из имени файла
                 import os
                 filename = os.path.basename(path)
                 word_from_path = os.path.splitext(filename)[0]
@@ -589,19 +572,75 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def _show_no_image_placeholder(self):
-        """Компактный текстовый placeholder"""
-        self.img_container.config(
-            image="",
-            text="No image",
-            compound="center",
-            font=("Segoe UI", 9),
-            fg=COLORS["text_faint"],
-            bg=COLORS["bg"]
-        )
+        """
+        Рисует серую рамку с текстом "No image" по центру.
+        """
+        try:
+            # КРИТИЧНО: Используем update_idletasks() для получения актуальных размеров
+            self.update_idletasks()
+
+            # Размеры placeholder
+            width = max(100, self.winfo_width() - (self.IMAGE_CONTAINER_PADDING_X * 2))
+            height = max(50, int(self.winfo_height() * self.IMAGE_CONTAINER_HEIGHT_PERCENT) - 20)
+
+            # Создаём пустую картинку с фоном окна
+            img = Image.new("RGB", (width, height), COLORS["bg"])
+            draw = ImageDraw.Draw(img)
+
+            # Рисуем серую рамку (2px для видимости)
+            draw.rectangle(
+                [(1, 1), (width - 2, height - 2)],
+                outline=COLORS["separator"],
+                width=2  # Увеличено до 2px для лучшей видимости
+            )
+
+            # Пытаемся загрузить системный шрифт
+            try:
+                font = ImageFont.truetype("segoeui.ttf", 11)
+            except:
+                try:
+                    font = ImageFont.truetype("arial.ttf", 11)
+                except:
+                    font = ImageFont.load_default()
+
+            # Текст по центру
+            text = "No image"
+
+            # Получаем размеры текста
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            text_x = (width - text_width) // 2
+            text_y = (height - text_height) // 2
+
+            # Рисуем текст
+            draw.text(
+                (text_x, text_y),
+                text,
+                fill=COLORS["text_faint"],
+                font=font
+            )
+
+            # Конвертируем в PhotoImage
+            tki = ImageTk.PhotoImage(img)
+            self.img_container.config(image=tki, text="", bg=COLORS["bg"])
+            self.img_container.image = tki
+
+        except Exception:
+            # Fallback на текстовый placeholder
+            self.img_container.config(
+                image="",
+                text="No image",
+                font=("Segoe UI", 10),
+                fg=COLORS["text_faint"],
+                bg=COLORS["bg"]
+            )
+
         self.sources["img"] = "—"
         self.current_image_word = None
 
-        # ===== STATUS =====
+    # ===== STATUS =====
 
     @property
     def status_text(self) -> str:
@@ -619,29 +658,24 @@ class MainWindow(tk.Tk):
         if data and data.get("rus"):
             translation_text = data["rus"]
 
-            # Обрезка длинного текста
             if len(translation_text) > TRANSLATION_MAX_LENGTH:
                 translation_text = translation_text[:TRANSLATION_MAX_LENGTH - 3] + "..."
 
-            # Подбираем размер шрифта
             font_size = self._calculate_translation_font_size(translation_text)
 
             self.lbl_rus.config(
                 text=translation_text,
                 fg=COLORS["text_accent"],
-                font=("Segoe UI", font_size)  # Динамический размер!
+                font=("Segoe UI", font_size)
             )
             self.sources["trans"] = source
         else:
-            # Fallback
             current_word = self.lbl_word.cget("text")
             if current_word and current_word != "English Helper":
                 fallback_text = f"({current_word})"
-                # Подбираем шрифт для (word) - может быть длинное слово!
                 font_size = self._calculate_translation_font_size(fallback_text)
             else:
                 fallback_text = "No translation"
-                # Для "No translation" - фиксированный 20pt
                 font_size = TRANSLATION_FALLBACK_FONT
 
             self.lbl_rus.config(
@@ -654,16 +688,14 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """Сброс UI для нового слова."""
-        # self.scrollbar.block_updates()  <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
-
+        """Сброс UI для нового слова"""
         self.lbl_word.config(text=word)
         from gui.styles import TRANSLATION_FALLBACK_FONT
 
         self.lbl_rus.config(
             text="Loading...",
             fg=COLORS["text_accent"],
-            font=("Segoe UI", TRANSLATION_FALLBACK_FONT)  # Фиксированный 20pt
+            font=("Segoe UI", TRANSLATION_FALLBACK_FONT)
         )
 
         self.img_container.config(
@@ -677,8 +709,6 @@ class MainWindow(tk.Tk):
         self.refresh_status()
         self.lbl_rus.config(wraplength=self.winfo_width() - 20)
         self.update_cache_button()
-
-        # self.canvas_scroll.yview_moveto(0) <-- УДАЛИТЬ или ЗАКОММЕНТИРОВАТЬ
 
     # ===== WINDOW CONTROLS =====
 
@@ -694,26 +724,28 @@ class MainWindow(tk.Tk):
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
 
-        # Обновляем wraplength
-        self.lbl_rus.config(wraplength=new_w - 20)
-        self.lbl_word.config(wraplength=new_w - 50)
-
         # Пересчитываем шрифт перевода при resize (только для реального перевода)
         current_text = self.lbl_rus.cget("text")
         service_messages = ["Ready", "Loading...", "No translation"]
         is_service = any(msg in current_text for msg in service_messages)
 
         if current_text and not is_service:
-            # Пересчитываем размер
             font_size = self._calculate_translation_font_size(current_text)
             self.lbl_rus.config(font=("Segoe UI", font_size))
 
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
-        """Сохранение размера окна"""
-        cfg.set("USER", "WindowWidth", self.winfo_width())
-        cfg.set("USER", "WindowHeight", self.winfo_height())
+        """Сохранение размера окна и обновление wraplength"""
+        new_w = self.winfo_width()
+        new_h = self.winfo_height()
+
+        cfg.set("USER", "WindowWidth", new_w)
+        cfg.set("USER", "WindowHeight", new_h)
+
+        # Обновляем wraplength после завершения resize
+        self.lbl_rus.config(wraplength=new_w - 20)
+        self.lbl_word.config(wraplength=new_w - 50)
 
     def toggle_sentence_window(self, event=None):
         """Переключение окна предложений с анимацией"""
@@ -721,13 +753,10 @@ class MainWindow(tk.Tk):
         new_state = not current
 
         if new_state:
-            # Показываем окно С АНИМАЦИЕЙ
             cfg.set("USER", "ShowSentenceWindow", True)
             self.sent_window.show_animated()
             self.btn_toggle_sent.sync_state()
         else:
-            # Скрываем окно С АНИМАЦИЕЙ через close_window()
-            # (close_window сам обновит конфиг и синхронизирует кнопку)
             self.sent_window.close_window()
 
     def toggle_auto_pronounce(self, event=None):
@@ -736,23 +765,17 @@ class MainWindow(tk.Tk):
         new_state = not current
         cfg.set("USER", "AutoPronounce", new_state)
 
-        # Синхронизация визуального состояния кнопки
         self.btn_toggle_pronounce.sync_state()
 
     # ===== VOCAB SLIDER =====
 
     def change_level(self, delta: int):
-        """
-        Изменение уровня словаря через стрелки.
-
-        Обновляет popup если он открыт (но НЕ закрывает его).
-        """
+        """Изменение уровня словаря через стрелки"""
         new_val = self.vocab_var.get() + delta
         if 0 <= new_val <= 100:
             self.vocab_var.set(new_val)
             self.lbl_lvl_val.config(text=str(new_val))
 
-            # Обновляем popup если он открыт (не закрываем)
             if self.popup and self.popup.winfo_viewable():
                 self.popup.update_words(new_val)
 
@@ -763,71 +786,40 @@ class MainWindow(tk.Tk):
         cfg.set("USER", "VocabLevel", self.vocab_var.get())
 
     def on_slider_press(self, event):
-        """
-        Обработка нажатия на ползунок слайдера.
-
-        Логика:
-        1. Запоминаем был ли popup открыт ДО этого клика
-        2. Открываем popup с анимацией если закрыт
-        3. Обновляем содержимое (т.к. значение слайдера изменилось при клике)
-        """
-        # ПЕРВЫМ ДЕЛОМ: Запоминаем состояние popup ДО любых действий
+        """Обработка нажатия на ползунок слайдера"""
         self._popup_was_open_before_click = self.popup and self.popup.winfo_viewable()
         self._slider_was_moved = False
         self.dragging_allowed = False
 
-        # Открываем popup с анимацией только если закрыт
         if not self._popup_was_open_before_click:
             x = self.winfo_x() + self.winfo_width() + 10
             y = self.winfo_y()
             self.popup.show_animated(x, y)
 
-        # ВСЕГДА обновляем содержимое popup (значение слайдера изменилось при клике)
         self.after(10, self._update_popup_if_visible)
 
     def _update_popup_if_visible(self):
-        """
-        Обновляет popup если он открыт.
-
-        Вызывается через after() для синхронизации с обновлением значения слайдера.
-        Защищён проверкой winfo_viewable() на случай если popup был закрыт
-        до выполнения отложенного вызова.
-        """
+        """Обновляет popup если он открыт"""
         if self.popup and self.popup.winfo_viewable():
             self.popup.update_words(self.vocab_var.get())
 
     def on_slider_motion(self, event):
-        """
-        Обработка движения ползунка (drag).
-
-        КРИТИЧНО: Устанавливает флаг что было движение, чтобы отличить
-        простой клик от драга.
-        """
+        """Обработка движения ползунка (drag)"""
         self._slider_was_moved = True
 
-        # Обновляем label со значением
         self.lbl_lvl_val.config(text=str(self.vocab_var.get()))
 
-        # Обновляем popup если открыт (debounced через update_words)
         if self.popup and self.popup.winfo_viewable():
             self.popup.update_words(self.vocab_var.get())
 
     def on_slider_release(self, event):
-        """
-        Обработка отпускания кнопки мыши после взаимодействия со слайдером.
-
-        Логика закрытия popup:
-        - Закрываем с анимацией ТОЛЬКО если popup был открыт ДО клика И не было движения
-        """
-        # Сохраняем уровень всегда
+        """Обработка отпускания кнопки мыши после взаимодействия со слайдером"""
         self.save_level()
 
-        # Закрываем popup с анимацией только если он был открыт ДО клика И не было движения
         if self._popup_was_open_before_click and not self._slider_was_moved:
             if self.popup and self.popup.winfo_viewable():
                 self.popup.close_animated()
 
-        # Сбрасываем флаги для следующего взаимодействия
         self._slider_was_moved = False
         self._popup_was_open_before_click = False
 
@@ -869,7 +861,6 @@ class MainWindow(tk.Tk):
 
     def close_app(self):
         """Закрытие приложения"""
-        # Уничтожаем popup если существует
         if hasattr(self, 'popup') and self.popup:
             self.popup.destroy()
 
