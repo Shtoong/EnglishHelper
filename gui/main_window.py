@@ -132,7 +132,7 @@ class MainWindow(tk.Tk):
         Это предотвращает выталкивание bottom_frame за границы окна при показе картинки.
         """
         self._create_top_bar()
-        self._create_word_header()
+        #self._create_word_header()
         self._create_translation_display()
         self._create_image_container()
         self._create_separator()
@@ -165,30 +165,36 @@ class MainWindow(tk.Tk):
         ).pack(pady=5)
 
     def _create_top_bar(self):
-        """Верхняя панель с кнопкой закрытия"""
-        top_bar = tk.Frame(self, bg=COLORS["bg"], height=30)
-        top_bar.pack(fill="x", pady=(5, 0))
+        """Верхняя панель: слово по центру, крестик поверх справа"""
+        top_bar = tk.Frame(self, bg=COLORS["bg"], height=35)
+        top_bar.pack(fill="x", pady=(0, 5))
+        top_bar.pack_propagate(False)
 
-        btn_close = self._create_label(
+        # Слово - центрируется по всей ширине окна
+        self.lbl_word = self._create_label(
+            top_bar,
+            text="English Helper",
+            font_key="header",
+            fg_key="text_header",
+            wraplength=350
+        )
+        self.lbl_word.pack(expand=True, padx=(10, 40))
+
+        # Крестик - абсолютное позиционирование поверх
+        self.btn_close = self._create_label(
             top_bar,
             text="✕",
             font_key="header",
             fg_key="close_btn",
             cursor="hand2"
         )
-        btn_close.config(font=FONTS["close_btn"])
-        btn_close.pack(side="right", padx=10)
-        btn_close.bind("<Button-1>", lambda e: self.close_app())
+        self.btn_close.config(font=FONTS["close_btn"])
+        self.btn_close.place(relx=1.0, rely=0.5, anchor='e', x=-10)
+        self.btn_close.bind("<Button-1>", lambda e: self.close_app())
 
     def _create_word_header(self):
-        """Заголовок слова"""
-        self.lbl_word = self._create_label(
-            self,
-            text="English Helper",
-            font_key="header",
-            fg_key="text_header"
-        )
-        self.lbl_word.pack(pady=(10, 5), anchor="center")
+        """Не используется - слово теперь в top_bar"""
+        pass
 
     def _create_translation_display(self):
         """Область отображения перевода"""
@@ -599,6 +605,7 @@ class MainWindow(tk.Tk):
 
         self.geometry(f"{new_w}x{new_h}+{current_x}+{current_y}")
         self.lbl_rus.config(wraplength=new_w - 20)
+        self.lbl_word.config(wraplength=new_w - 50)  # ← ДОБАВИТЬ ЭТУ СТРОКУ!
         self.scrollable_frame.event_generate("<Configure>")
 
     def save_size(self):
