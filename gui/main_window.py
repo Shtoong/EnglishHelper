@@ -81,8 +81,11 @@ class MainWindow(tk.Tk):
         # ===== СОСТОЯНИЕ =====
         self.sources = {"trans": "wait", "img": "wait"}
         self.dragging_allowed = False
-        self.trans_cache = OrderedDict()  # LRU cache для hover-переводов
+        self.trans_cache = OrderedDict()
         self.hover_timer = None
+
+        # Текущее слово (для защиты от устаревших обновлений)
+        self.current_word = None
         self.current_image_word = None
 
         # Флаги для умного управления popup слайдера
@@ -688,27 +691,66 @@ class MainWindow(tk.Tk):
         self.refresh_status()
 
     def reset_ui(self, word: str):
-        """Сброс UI для нового слова"""
-        self.lbl_word.config(text=word)
-        from gui.styles import TRANSLATION_FALLBACK_FONT
+        """
+        Сброс UI для нового слова с показом placeholders.
 
+        Вызывается из WordProcessor перед запуском параллельных workers.
+        """
+
+        print("------- New word --------------------------------------------------------")
+
+        # Запоминаем текущее слово (для защиты от устаревших обновлений)
+        self.current_word = word
+
+        # Заголовок с самим словом
+        self.lbl_word.config(text=word)
+
+        # Placeholder для перевода
         self.lbl_rus.config(
-            text="Loading...",
-            fg=COLORS["text_accent"],
-            font=("Segoe UI", TRANSLATION_FALLBACK_FONT)
+            text="Loading translation...",
+            fg=COLORS["text_accent"],  # можно заменить на более бледный цвет, если есть
+            font=("Segoe UI", 16)
         )
 
+        # Placeholder / очистка изображения
         self.img_container.config(
             image="",
-            text="",
+            text="",  # можно поставить "Loading image..." если хотите сразу текст
             bg=COLORS["bg"]
         )
 
+        # Очищаем область словаря и показываем skeleton loader
         self.dict_renderer.clear()
+        self._show_skeleton_loader()
+
+        # Сбрасываем источники
         self.sources = {"trans": "...", "img": "..."}
+
+        # Обновляем статусную строку и wrap перевода
         self.refresh_status()
-        self.lbl_rus.config(wraplength=self.winfo_width() - 20)
-        self.update_cache_button()
+        try:
+            self.lbl_rus.config(wraplength=self.winfo_width() - 20)
+        except Exception:
+            pass
+
+        # Обновляем состояние кнопки кэша, если она есть
+        try:
+            self.update_cache_button()
+        except Exception:
+            pass
+
+    def _show_skeleton_loader(self):
+        """
+        Просто очищает область словаря (без графических полосок).
+        """
+        parent = getattr(self.dict_renderer, "parent", None)
+        if parent:
+            for w in parent.winfo_children():
+                w.destroy()
+
+            # Можно добавить простой текст, если хотите, или оставить пустым
+            # import tkinter as tk
+            # tk.Label(parent, text="Thinking...", font=("Segoe UI", 10), bg=COLORS["bg"], fg=COLORS["text_faint"]).pack(pady=20)
 
     # ===== WINDOW CONTROLS =====
 
