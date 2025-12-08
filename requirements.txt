@@ -9,3 +9,5 @@ keyboard
 Pillow
 playsound
 lemminflect
+#google-cloud-texttospeech
+google-auth

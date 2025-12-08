@@ -14,7 +14,7 @@ Architecture:
 """
 
 from vocab import init_vocab
-from network import close_all_sessions
+from network import close_all_sessions, clear_temp_audio
 from editor import TextEditorSimulator
 from gui.main_window import MainWindow
 
@@ -77,6 +77,7 @@ def main():
         input_manager.stop_listening()
         sentence_manager.cancel_pending_translation()
         close_all_sessions()
+        clear_temp_audio()
 
 
 if __name__ == "__main__":

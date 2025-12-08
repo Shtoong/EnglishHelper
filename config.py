@@ -23,6 +23,7 @@ DATA_DIR: Final[str] = "Data"
 IMG_DIR: Final[str] = os.path.join(DATA_DIR, "Images")
 DICT_DIR: Final[str] = os.path.join(DATA_DIR, "Dicts")
 AUDIO_DIR: Final[str] = os.path.join(DATA_DIR, "Audio")
+TEMP_AUDIO_DIR: Final[str] = os.path.join(DATA_DIR, "TempAudio")
 VOCAB_FILE: Final[str] = os.path.join(DATA_DIR, "vocab_20k.txt")
 
 _MB: Final[int] = 1048576  # Байт в мегабайте (1024 * 1024)
@@ -30,7 +31,10 @@ _MB: Final[int] = 1048576  # Байт в мегабайте (1024 * 1024)
 DEFAULT_CONFIG: Final[dict] = {
     "API": {
         "YandexKey": "",
-        "PexelsKey": ""
+        "PexelsKey": "",
+        "GoogleTTSCredentials": "google-tts-credentials.json",
+        "GoogleTTSVoice": "en-US-Neural2-J",
+        "GoogleTTSSpeed": "1.0"
     },
     "USER": {
         "VocabLevel": "10",
@@ -55,6 +59,8 @@ def _ensure_directories():
     os.makedirs(IMG_DIR, exist_ok=True)
     os.makedirs(DICT_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
+    os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
+
 
 
 # ===== МЕНЕДЖЕР КОНФИГУРАЦИИ =====
@@ -176,7 +182,7 @@ def clear_cache() -> int:
     """
     deleted_count = 0
 
-    for subdir in (IMG_DIR, DICT_DIR, AUDIO_DIR):
+    for subdir in (IMG_DIR, DICT_DIR, AUDIO_DIR, TEMP_AUDIO_DIR):
         if not os.path.exists(subdir):
             continue
 

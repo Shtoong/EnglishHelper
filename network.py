@@ -12,6 +12,7 @@
 - phonetics НЕ сохраняются в кэш (лишние данные)
 - Все операции записи защищены _cache_write_lock
 """
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -24,8 +25,10 @@ import time
 import datetime
 from urllib.parse import quote
 from functools import lru_cache
+import hashlib
 from typing import Optional, Dict, Tuple
-from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR
+
+from config import cfg, DICT_DIR, IMG_DIR, AUDIO_DIR, TEMP_AUDIO_DIR
 
 # ===== НАСТРОЙКИ ОТЛАДКИ =====
 #DEBUG_NETWORK = False  # <--- ВКЛЮЧИТЕ FALSE, ЧТОБЫ УБРАТЬ ЛОГИ В КОНСОЛИ
@@ -33,8 +36,8 @@ DEBUG_NETWORK = True  # <--- ВКЛЮЧИТЕ True, ЧТОБЫ ПОКАЗАТЬ 
 
 # ===== КОНСТАНТЫ =====
 MIN_VALID_AUDIO_SIZE = 1500  # bytes, ~0.1s of MP3 audio
-MIN_IMAGE_DIMENSION = 100    # pixels, минимум для валидных изображений
-IMAGE_THUMBNAIL_SIZE = 500   # Pexels/Wiki API параметр
+MIN_IMAGE_DIMENSION = 100  # pixels, минимум для валидных изображений
+IMAGE_THUMBNAIL_SIZE = 500  # Pexels/Wiki API параметр
 
 # ===== ИМПОРТЫ С GRACEFUL DEGRADATION =====
 try:
@@ -60,7 +63,6 @@ def get_safe_filename(word: str) -> str:
 def _create_session(max_retries=2, backoff_factor=0.2):
     """Создает HTTP session с логгером и retry стратегией"""
     session = requests.Session()
-
     retry_strategy = Retry(
         total=max_retries,
         backoff_factor=backoff_factor,
@@ -110,7 +112,13 @@ session_wiki = _create_session()
 
 # ===== THREAD SAFETY =====
 _audio_play_lock = threading.Lock()
-_cache_write_lock = threading.Lock() # ✅ ДОБАВЛЕНО: Защита от race condition
+_cache_write_lock = threading.Lock()  # ✅ ДОБАВЛЕНО: Защита от race condition
+
+# ===== КЭШИРОВАНИЕ GOOGLE TTS TOKEN =====
+_google_tts_token_cache = {
+    "token": None,
+    "expiry": None
+}
 
 # ===== ХЕЛПЕРЫ КЭША =====
 def get_cache_path(word: str) -> str:
@@ -130,6 +138,14 @@ def get_audio_cache_path(word: str, accent: str = "us") -> str:
     """Возвращает путь к кэшу аудио файла"""
     safe_word = get_safe_filename(word)
     return os.path.join(AUDIO_DIR, f"{safe_word}-{accent}.mp3")
+
+def get_temp_audio_path(text: str) -> str:
+    """
+    Возвращает путь к временному аудиофайлу на основе хэша текста.
+    Используется для предложений/определений (use_cache=False).
+    """
+    text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()[:16]
+    return os.path.join(TEMP_AUDIO_DIR, f"{text_hash}.mp3")
 
 def get_image_path(word: str) -> str:
     """Возвращает путь к кэшу изображения"""
@@ -190,6 +206,121 @@ def download_and_cache_audio(url: str, cache_path: str) -> bool:
         pass
     return False
 
+def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str]:
+    """
+    Загружает аудио через официальный Google Cloud Text-to-Speech REST API.
+    Использует Service Account credentials с кэшированием токена.
+
+    Args:
+        text: Текст для озвучки
+        use_cache: Если True - кэшировать в AUDIO_DIR, иначе в TEMP_AUDIO_DIR
+
+    Returns:
+        Путь к аудиофайлу или None при ошибке
+    """
+    credentials_file = cfg.get("API", "GoogleTTSCredentials")
+    if not credentials_file or not os.path.exists(credentials_file):
+        return None
+
+    # Определяем путь для сохранения
+    if use_cache:
+        safe_word = get_safe_filename(text)
+        cache_path = os.path.join(AUDIO_DIR, f"{safe_word}-us-official.mp3")
+
+        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+            return cache_path
+    else:
+        cache_path = get_temp_audio_path(text)
+
+        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+            return cache_path
+
+    try:
+        # Получаем или обновляем access token
+        now = datetime.datetime.now()
+
+        # Проверяем кэш токена
+        if (_google_tts_token_cache["token"] is None or
+            _google_tts_token_cache["expiry"] is None or
+            now >= _google_tts_token_cache["expiry"]):
+
+            # Загружаем credentials из JSON файла
+            with open(credentials_file, 'r') as f:
+                credentials_data = json.load(f)
+
+            # Получаем новый access token
+            from google.oauth2 import service_account
+            from google.auth.transport.requests import Request
+
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_data,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            credentials.refresh(Request())
+
+            # Кэшируем токен (срок действия обычно 1 час)
+            _google_tts_token_cache["token"] = credentials.token
+            _google_tts_token_cache["expiry"] = now + datetime.timedelta(minutes=55)
+
+        access_token = _google_tts_token_cache["token"]
+
+        # Настройки из конфига
+        voice_name = cfg.get("API", "GoogleTTSVoice", fallback="en-US-Neural2-J")
+        speed = float(cfg.get("API", "GoogleTTSSpeed", fallback="1.0"))
+
+        # REST API URL (без API key)
+        url = "https://texttospeech.googleapis.com/v1/text:synthesize"
+
+        # Формируем JSON тело запроса
+        request_body = {
+            "input": {"text": text},
+            "voice": {
+                "languageCode": "en-US",
+                "name": voice_name
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3",
+                "speakingRate": speed
+            }
+        }
+
+        # Отправляем POST запрос с Bearer token
+        response = session_google.post(
+            url,
+            json=request_body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}"
+            },
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+
+            # Аудио возвращается в base64
+            import base64
+            audio_content = base64.b64decode(result["audioContent"])
+
+            # Атомарное сохранение
+            temp_path = cache_path + '.tmp'
+            with open(temp_path, "wb") as f:
+                f.write(audio_content)
+
+            os.replace(temp_path, cache_path)
+
+            if is_valid_audio_file(cache_path):
+                return cache_path
+        else:
+            if DEBUG_NETWORK:
+                print(f"DEBUG: Google Official TTS HTTP {response.status_code}: {response.text}")
+
+    except Exception as e:
+        if DEBUG_NETWORK:
+            print(f"DEBUG: Google Official TTS error: {e}")
+
+    return None
+
 def streaming_play_and_cache(url: str, cache_path: str):
     """Потоковое воспроизведение с одновременным кэшированием"""
     if not PLAYSOUND_AVAILABLE:
@@ -218,14 +349,13 @@ def streaming_play_and_cache(url: str, cache_path: str):
                                 daemon=True
                             ).start()
 
-            # Явное закрытие handle перед move (критично для Windows)
-            tmp.close()
+                # Явное закрытие handle перед move (критично для Windows)
+                tmp.close()
 
-            # Атомарная запись
-            temp_final = cache_path + '.tmp'
-            shutil.move(tmp_path, temp_final)
-            os.replace(temp_final, cache_path)
-
+                # Атомарная запись
+                temp_final = cache_path + '.tmp'
+                shutil.move(tmp_path, temp_final)
+                os.replace(temp_final, cache_path)
     except (requests.RequestException, IOError, OSError):
         pass
 
@@ -279,7 +409,6 @@ def save_full_dictionary_data(word: str, data: Dict):
         except (IOError, OSError):
             pass
 
-
 def fetch_dictionary_meanings_only(word: str) -> Optional[Dict]:
     """
     Запрашивает данные у DictionaryAPI.
@@ -287,10 +416,8 @@ def fetch_dictionary_meanings_only(word: str) -> Optional[Dict]:
     Кэширует результат (даже пустой), чтобы не долбить API зря.
     """
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-
     try:
         resp = session_dict.get(url, timeout=10)
-
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list) and len(data) > 0:
@@ -301,16 +428,12 @@ def fetch_dictionary_meanings_only(word: str) -> Optional[Dict]:
                 # API ответил 200 OK, но список пуст.
                 # Возвращаем пустую структуру, которая будет закэширована.
                 return {"word": word, "meanings": [], "phonetics": []}
-
         elif resp.status_code == 404:
             # Слова нет (404). Тоже кэшируем пустоту.
             return {"word": word, "meanings": [], "phonetics": []}
-
     except (requests.RequestException, ValueError):
         pass
-
     return None
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ПЕРЕВОД (TRANSLATION)
@@ -341,7 +464,6 @@ def save_translation_cache(word: str, translation: str):
         except (IOError, OSError):
             pass
 
-
 def fetch_yandex_translation(text: str) -> Optional[str]:
     """
     Перевод слова через Yandex Dictionary API с умным сбором значений.
@@ -364,11 +486,9 @@ def fetch_yandex_translation(text: str) -> Optional[str]:
 
     try:
         resp = session_dict.get(url, params=params, timeout=5)
-
         if resp.status_code == 200:
             data = resp.json()
             definitions = data.get("def", [])
-
             if not definitions:
                 return None
 
@@ -395,12 +515,9 @@ def fetch_yandex_translation(text: str) -> Optional[str]:
             # 3. Формируем строку
             if collected_words:
                 return ", ".join(collected_words[:3])
-
     except (requests.RequestException, KeyError, IndexError, ValueError):
         pass
-
     return None
-
 
 def fetch_google_translation(text: str) -> Optional[str]:
     """Перевод через Google (fallback)"""
@@ -444,7 +561,6 @@ def fetch_pexels_image(word: str) -> Optional[str]:
 
     cleaned_word = ''.join(c for c in word if c.isalpha() and ord(c) < 128).lower()
     url = f"https://api.pexels.com/v1/search?query={cleaned_word}&per_page=1"
-
     session_pexels.headers.update({"Authorization": key})
 
     try:
@@ -493,7 +609,6 @@ def fetch_wiki_image(word: str) -> Optional[str]:
 
                 thumbnail = page["thumbnail"]
                 img_url = thumbnail.get("source", "")
-
                 if not img_url:
                     continue
 
@@ -504,7 +619,6 @@ def fetch_wiki_image(word: str) -> Optional[str]:
                 # Проверка минимального разрешения
                 width = thumbnail.get("width", 0)
                 height = thumbnail.get("height", 0)
-
                 if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
                     continue
 
@@ -565,47 +679,83 @@ def close_all_sessions():
     session_pexels.close()
     session_wiki.close()
 
+def clear_temp_audio() -> int:
+    """
+    Очищает временные аудиофайлы (вызывается при закрытии приложения).
+
+    Returns:
+        Количество удаленных файлов
+    """
+    if not os.path.exists(TEMP_AUDIO_DIR):
+        return 0
+
+    deleted_count = 0
+    try:
+        with os.scandir(TEMP_AUDIO_DIR) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    try:
+                        os.unlink(entry.path)
+                        deleted_count += 1
+                    except OSError:
+                        continue
+    except OSError:
+        pass
+
+    return deleted_count
+
 # ═══════════════════════════════════════════════════════════════════════════
 # AUDIO HIGH-LEVEL API
 # ═══════════════════════════════════════════════════════════════════════════
 
-def ensure_audio_ready(word: str) -> Optional[str]:
+def ensure_audio_ready(word: str, use_cache: bool = True) -> Optional[str]:
     """
-    Гарантирует наличие аудиофайла.
+    Гарантирует наличие аудиофайла (с поддержкой официального Google TTS).
 
     Логика:
-    1. Проверяет кэш.
-    2. Если есть .tmp (чужая загрузка) -> ждет завершения.
-    3. Если ничего нет -> скачивает.
+    1. Проверяет кэш (если use_cache=True).
+    2. Пробует официальный Google Cloud TTS API.
+    3. Fallback на неофициальный Google TTS.
+
+    Args:
+        word: Слово или текст для озвучки
+        use_cache: Если True - сохранять в постоянный кэш (для вызова озвучки слов), иначе во временный
 
     Returns:
         Путь к файлу (.mp3) или None, если не удалось получить.
     """
-    cache_path = get_audio_cache_path(word, "us")
-    temp_path = cache_path + '.tmp'
+    # 1. Пробуем официальный Google TTS API
+    official_path = fetch_google_official_tts(word, use_cache=use_cache)
+    if official_path:
+        return official_path
 
-    # 1. Быстрая проверка
-    if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
-        return cache_path
+    # 2. Fallback на неофициальный Google TTS (только для слов с кэшем)
+    if use_cache:
+        cache_path = get_audio_cache_path(word, "us")
+        temp_path = cache_path + '.tmp'
 
-    # 2. Ожидание чужой загрузки
-    if os.path.exists(temp_path):
-        for _ in range(20): # ждем до 2 сек
-            if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
-                return cache_path
-            time.sleep(0.1)
+        # Быстрая проверка кэша
+        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+            return cache_path
 
-    # 3. Скачивание (если все еще нет)
-    url = get_google_tts_url(word, "us")
-    if download_and_cache_audio(url, cache_path):
-        return cache_path
+        # Ожидание чужой загрузки
+        if os.path.exists(temp_path):
+            for _ in range(20):  # ждем до 2 сек
+                if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+                    return cache_path
+                time.sleep(0.1)
 
-    # Fallback на стриминг (он тоже сохранит файл)
-    streaming_play_and_cache(url, cache_path)
+        # Скачивание
+        url = get_google_tts_url(word, "us")
+        if download_and_cache_audio(url, cache_path):
+            return cache_path
 
-    # Проверяем финальный результат
-    if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
-        return cache_path
+        # Fallback на стриминг
+        streaming_play_and_cache(url, cache_path)
+
+        # Финальная проверка
+        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+            return cache_path
 
     return None
 
@@ -618,7 +768,7 @@ def play_audio_safe(path: str):
         return
 
     try:
-        # with _audio_play_lock: # Блокировка отключена для скорости
+        # with _audio_play_lock:  # Блокировка отключена для скорости
         playsound(path)
     except Exception as e:
         print(f"DEBUG: Audio playback error: {e}")
