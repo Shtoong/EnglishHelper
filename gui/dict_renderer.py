@@ -6,12 +6,14 @@ Responsibilities:
 - Объединение meanings с одинаковой частью речи
 - Рендеринг определений, примеров, синонимов, антонимов
 - Hover-переводы для примеров
+- Озвучивание определений и примеров по клику
 - Кликабельные синонимы
 - Организация контента по кастомным вкладкам
 - Интеграция lemminflect для генерации словоформ с fallback логикой
 """
 
 import tkinter as tk
+import threading
 from typing import Dict, List, Optional, Callable
 from gui.styles import COLORS, FONTS
 from gui.scrollbar import CustomScrollbar
@@ -369,6 +371,7 @@ class DictionaryRenderer:
     - Минимум вложенных frames
     - Кастомные вкладки по частям речи
     - Интеграция lemminflect для генерации словоформ с fallback логикой
+    - Озвучивание определений и примеров по клику с защитой от наложения
     """
 
     # Константы для группировки частей речи
@@ -412,6 +415,7 @@ class DictionaryRenderer:
         self.main_window = main_window
 
         self.current_word = ""  # Текущее слово для lemminflect
+        self._audio_playing = False  # Флаг воспроизведения аудио (защита от наложения)
 
     def clear(self):
         """Очищает все виджеты из scrollable frame"""
@@ -1024,7 +1028,7 @@ class DictionaryRenderer:
         def_frame = tk.Frame(parent, bg=COLORS["bg"])
         def_frame.pack(fill="x", padx=0, pady=0)
 
-        # КРИТИЧНО: Привязываем mousewheel к Frame определения
+        # Привязываем mousewheel к Frame определения
         def_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Номер определения
@@ -1037,7 +1041,7 @@ class DictionaryRenderer:
         )
         lbl_num.pack(side="left", anchor="nw", padx=(0, 5))
 
-        # КРИТИЧНО: Привязываем mousewheel к номеру определения
+        # Привязываем mousewheel к номеру определения
         lbl_num.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Текст определения
@@ -1053,22 +1057,25 @@ class DictionaryRenderer:
         )
         lbl_def.pack(side="left", fill="x", expand=True, anchor="nw")
 
-        # КРИТИЧНО: Привязываем mousewheel к Label определения
+        # Привязываем mousewheel к Label определения
         lbl_def.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
-        # КРИТИЧНО: Привязываем hover-перевод к Label определения
+        # Обработчик клика для озвучивания определения
+        lbl_def.bind("<Button-1>", lambda e: self._on_definition_click(def_text))
+
+        # Привязываем hover-перевод к Label определения
         self.bind_hover_translation(lbl_def, def_text)
 
-        # Пример (с hover-переводом)
+        # Пример (с hover-переводом и озвучиванием)
         if example:
-            # Фрейм для примера — такой же как для определения
+            # Фрейм для примера
             example_frame = tk.Frame(parent, bg=COLORS["bg"])
             example_frame.pack(fill="x", padx=0, pady=(0, 0))
 
-            # КРИТИЧНО: Привязываем mousewheel к Frame примера
+            # Привязываем mousewheel к Frame примера
             example_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
-            # Пустой Label для отступа (такой же как номер определения)
+            # Пустой Label для отступа
             lbl_example_indent = tk.Label(
                 example_frame,
                 text="",
@@ -1078,7 +1085,7 @@ class DictionaryRenderer:
             )
             lbl_example_indent.pack(side="left", anchor="nw", padx=(0, 5))
 
-            # КРИТИЧНО: Привязываем mousewheel к отступу примера
+            # Привязываем mousewheel к отступу примера
             lbl_example_indent.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
             # Текст примера (курсивом)
@@ -1094,10 +1101,13 @@ class DictionaryRenderer:
             )
             lbl_example.pack(side="left", fill="x", expand=True, anchor="nw")
 
+            # Обработчик клика для озвучивания примера
+            lbl_example.bind("<Button-1>", lambda e: self._on_definition_click(example))
+
             # Привязываем hover-перевод для примера
             self.bind_hover_translation(lbl_example, example)
 
-            # КРИТИЧНО: Привязываем mousewheel к Label примера
+            # Привязываем mousewheel к Label примера
             lbl_example.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
     def _render_synonyms(self, parent: tk.Frame, canvas: tk.Canvas, synonyms: List[str]):
@@ -1116,7 +1126,7 @@ class DictionaryRenderer:
         syn_frame = tk.Frame(parent, bg=COLORS["bg"])
         syn_frame.pack(fill="x", padx=0, pady=(5, 0))
 
-        # КРИТИЧНО: Привязываем mousewheel к Frame синонимов
+        # Привязываем mousewheel к Frame синонимов
         syn_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Заголовок в первой строке, первой колонке
@@ -1129,7 +1139,7 @@ class DictionaryRenderer:
         )
         lbl_syn_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
-        # КРИТИЧНО: Привязываем mousewheel к заголовку
+        # Привязываем mousewheel к заголовку
         lbl_syn_title.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Создаём синонимы в grid для переноса
@@ -1165,7 +1175,7 @@ class DictionaryRenderer:
             )
             lbl_syn.grid(row=row, column=col, sticky="w")
 
-            # Привязываем события - ТОЛЬКО наши обработчики, без bind_hover_translation
+            # Привязываем события
             lbl_syn.bind("<Button-1>", lambda e, word=syn: self.on_synonym_click(word))
             lbl_syn.bind("<Enter>", lambda e, word=syn, btn=lbl_syn: self._on_synonym_hover_enter(e, word, btn))
             lbl_syn.bind("<Leave>", lambda e, btn=lbl_syn: self._on_synonym_hover_leave(e, btn))
@@ -1192,7 +1202,7 @@ class DictionaryRenderer:
         ant_frame = tk.Frame(parent, bg=COLORS["bg"])
         ant_frame.pack(fill="x", padx=0, pady=(5, 0))
 
-        # КРИТИЧНО: Привязываем mousewheel к Frame антонимов
+        # Привязываем mousewheel к Frame антонимов
         ant_frame.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Заголовок в первой строке, первой колонке
@@ -1205,7 +1215,7 @@ class DictionaryRenderer:
         )
         lbl_ant_title.grid(row=0, column=0, sticky="w", padx=(0, 5))
 
-        # КРИТИЧНО: Привязываем mousewheel к заголовку
+        # Привязываем mousewheel к заголовку
         lbl_ant_title.bind("<MouseWheel>", lambda e: self._on_tab_mousewheel(e, canvas))
 
         # Создаём антонимы в grid для переноса
@@ -1241,7 +1251,7 @@ class DictionaryRenderer:
             )
             lbl_ant.grid(row=row, column=col, sticky="w")
 
-            # Привязываем события - ТОЛЬКО наши обработчики, без bind_hover_translation
+            # Привязываем события
             lbl_ant.bind("<Button-1>", lambda e, word=ant: self.on_synonym_click(word))
             lbl_ant.bind("<Enter>", lambda e, word=ant, btn=lbl_ant: self._on_synonym_hover_enter(e, word, btn))
             lbl_ant.bind("<Leave>", lambda e, btn=lbl_ant: self._on_synonym_hover_leave(e, btn))
@@ -1311,3 +1321,38 @@ class DictionaryRenderer:
         # Выполняем прокрутку
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"  # Останавливаем всплытие события
+
+    def _on_definition_click(self, text: str):
+        """
+        Обработчик клика по определению или примеру.
+
+        Озвучивает текст через Google Official TTS API с fallback на unofficial TTS.
+        Использует временные файлы (use_cache=False) в TEMP_AUDIO_DIR.
+
+        Защита от наложения: если уже воспроизводится аудио, клик игнорируется.
+
+        Args:
+            text: Английское предложение для озвучивания
+        """
+        # Защита от наложения аудио
+        if self._audio_playing:
+            return
+
+        def worker():
+            self._audio_playing = True
+            try:
+                from network import ensure_audio_ready, play_audio_safe
+
+                # Получаем аудио (временный кэш в TEMP_AUDIO_DIR)
+                audio_path = ensure_audio_ready(text, use_cache=False)
+
+                if audio_path:
+                    play_audio_safe(audio_path)
+            except Exception:
+                # Graceful degradation - не показываем ошибки пользователю
+                pass
+            finally:
+                self._audio_playing = False
+
+        # Запускаем в отдельном потоке (не блокируем GUI)
+        threading.Thread(target=worker, daemon=True).start()
