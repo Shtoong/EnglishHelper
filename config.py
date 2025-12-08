@@ -25,7 +25,6 @@ DICT_DIR: Final[str] = os.path.join(DATA_DIR, "Dicts")
 AUDIO_DIR: Final[str] = os.path.join(DATA_DIR, "Audio")
 TEMP_AUDIO_DIR: Final[str] = os.path.join(DATA_DIR, "TempAudio")
 VOCAB_FILE: Final[str] = os.path.join(DATA_DIR, "vocab_20k.txt")
-
 _MB: Final[int] = 1048576  # Байт в мегабайте (1024 * 1024)
 
 DEFAULT_CONFIG: Final[dict] = {
@@ -33,8 +32,10 @@ DEFAULT_CONFIG: Final[dict] = {
         "YandexKey": "",
         "PexelsKey": "",
         "GoogleTTSCredentials": "google-tts-credentials.json",
-        "GoogleTTSVoice": "en-US-Neural2-J",
-        "GoogleTTSSpeed": "1.0"
+        "GoogleTTSVoiceWord": "en-US-Neural2-J",           # Голос для слов
+        "GoogleTTSVoiceSentence": "en-US-Neural2-C",      # Голос для предложений
+        "GoogleTTSSpeedWord": "1.0",                       # Скорость для слов
+        "GoogleTTSSpeedSentence": "0.9"                    # Скорость для предложений
     },
     "USER": {
         "VocabLevel": "10",
@@ -50,6 +51,7 @@ DEFAULT_CONFIG: Final[dict] = {
 
 
 # ===== ИНИЦИАЛИЗАЦИЯ ДИРЕКТОРИЙ =====
+
 def _ensure_directories():
     """
     Ленивое создание директорий - вызывается только при создании ConfigManager.
@@ -62,19 +64,18 @@ def _ensure_directories():
     os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 
 
-
 # ===== МЕНЕДЖЕР КОНФИГУРАЦИИ =====
+
 class ConfigManager:
     """
     Управляет конфигурацией приложения с автоматической валидацией и сохранением.
-
     Потокобезопасность: Этот класс НЕ потокобезопасен. Используйте singleton 'cfg'.
     """
 
     def __init__(self):
         _ensure_directories()
-
         self.config = configparser.ConfigParser()
+
         if not os.path.exists(CONFIG_FILE):
             self._create_default()
         else:
@@ -93,14 +94,17 @@ class ConfigManager:
         Критично для обратной совместимости при добавлении новых настроек.
         """
         changed = False
+
         for section, options in DEFAULT_CONFIG.items():
             if not self.config.has_section(section):
                 self.config.add_section(section)
                 changed = True
+
             for key, val in options.items():
                 if not self.config.has_option(section, key):
                     self.config.set(section, key, val)
                     changed = True
+
         if changed:
             self._save()
 
@@ -120,12 +124,12 @@ class ConfigManager:
     def set(self, section: str, key: str, value) -> None:
         """
         Обновляет значение конфигурации и сохраняет на диск.
-
         Примечание: Каждый set() вызывает файловый I/O. Для пакетных обновлений
         рассмотрите реализацию метода set_batch().
         """
         if not self.config.has_section(section):
             self.config.add_section(section)
+
         self.config.set(section, key, str(value))
         self._save()
 
@@ -206,6 +210,7 @@ def clear_cache() -> int:
 
 
 # ===== SINGLETON ЭКЗЕМПЛЯР =====
+
 # КРИТИЧНО: Импортируйте этот singleton вместо создания новых экземпляров ConfigManager
 # чтобы избежать избыточного файлового I/O и потенциальных race conditions
 cfg = ConfigManager()

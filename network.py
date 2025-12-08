@@ -206,14 +206,39 @@ def download_and_cache_audio(url: str, cache_path: str) -> bool:
         pass
     return False
 
+
+def _is_single_word(text: str) -> bool:
+    """
+    Проверяет является ли текст одним словом (только английские буквы).
+
+    Args:
+        text: Текст для проверки
+
+    Returns:
+        True если текст содержит только английские буквы (одно слово),
+        False если есть пробелы, знаки препинания или другие символы
+    """
+    # Убираем пробелы по краям
+    cleaned = text.strip()
+
+    # Проверяем что все символы - английские буквы
+    return bool(cleaned) and all(c.isalpha() and ord(c) < 128 for c in cleaned)
+
+
 def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str]:
     """
     Загружает аудио через официальный Google Cloud Text-to-Speech REST API.
     Использует Service Account credentials с кэшированием токена.
 
+    УМНАЯ ЛОГИКА:
+    1. Автоматически определяет: слово или предложение (по наличию не-букв)
+    2. Слова → GoogleTTSVoiceWord + GoogleTTSSpeedWord, кэшируются в AUDIO_DIR
+    3. Предложения → GoogleTTSVoiceSentence + GoogleTTSSpeedSentence, в TEMP_AUDIO_DIR
+    4. Параметр use_cache сохранён для обратной совместимости (игнорируется)
+
     Args:
         text: Текст для озвучки
-        use_cache: Если True - кэшировать в AUDIO_DIR, иначе в TEMP_AUDIO_DIR
+        use_cache: (игнорируется) Кэширование определяется автоматически
 
     Returns:
         Путь к аудиофайлу или None при ошибке
@@ -222,18 +247,25 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
     if not credentials_file or not os.path.exists(credentials_file):
         return None
 
-    # Определяем путь для сохранения
-    if use_cache:
+    # Умное определение: слово или предложение?
+    is_word = _is_single_word(text)
+
+    # Определяем путь, голос и скорость в зависимости от типа текста
+    if is_word:
+        # СЛОВО: кэшируем в AUDIO_DIR, используем голос и скорость для слов
         safe_word = get_safe_filename(text)
         cache_path = os.path.join(AUDIO_DIR, f"{safe_word}-us-official.mp3")
-
-        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
-            return cache_path
+        voice_name = cfg.get("API", "GoogleTTSVoiceWord", fallback="en-US-Neural2-J")
+        speed = float(cfg.get("API", "GoogleTTSSpeedWord", fallback="1.0"))
     else:
+        # ПРЕДЛОЖЕНИЕ: временный файл в TEMP_AUDIO_DIR, используем голос и скорость для предложений
         cache_path = get_temp_audio_path(text)
+        voice_name = cfg.get("API", "GoogleTTSVoiceSentence", fallback="en-US-Neural2-C")
+        speed = float(cfg.get("API", "GoogleTTSSpeedSentence", fallback="0.9"))
 
-        if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
-            return cache_path
+    # Быстрая проверка кэша
+    if os.path.exists(cache_path) and is_valid_audio_file(cache_path):
+        return cache_path
 
     try:
         # Получаем или обновляем access token
@@ -241,9 +273,8 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
 
         # Проверяем кэш токена
         if (_google_tts_token_cache["token"] is None or
-            _google_tts_token_cache["expiry"] is None or
-            now >= _google_tts_token_cache["expiry"]):
-
+                _google_tts_token_cache["expiry"] is None or
+                now >= _google_tts_token_cache["expiry"]):
             # Загружаем credentials из JSON файла
             with open(credentials_file, 'r') as f:
                 credentials_data = json.load(f)
@@ -256,6 +287,7 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
                 credentials_data,
                 scopes=['https://www.googleapis.com/auth/cloud-platform']
             )
+
             credentials.refresh(Request())
 
             # Кэшируем токен (срок действия обычно 1 час)
@@ -263,10 +295,6 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
             _google_tts_token_cache["expiry"] = now + datetime.timedelta(minutes=55)
 
         access_token = _google_tts_token_cache["token"]
-
-        # Настройки из конфига
-        voice_name = cfg.get("API", "GoogleTTSVoice", fallback="en-US-Neural2-J")
-        speed = float(cfg.get("API", "GoogleTTSSpeed", fallback="1.0"))
 
         # REST API URL (без API key)
         url = "https://texttospeech.googleapis.com/v1/text:synthesize"
@@ -276,11 +304,11 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
             "input": {"text": text},
             "voice": {
                 "languageCode": "en-US",
-                "name": voice_name
+                "name": voice_name  # Автоматически выбранный голос
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
-                "speakingRate": speed
+                "speakingRate": speed  # Автоматически выбранная скорость
             }
         }
 
@@ -320,6 +348,7 @@ def fetch_google_official_tts(text: str, use_cache: bool = True) -> Optional[str
             print(f"DEBUG: Google Official TTS error: {e}")
 
     return None
+
 
 def streaming_play_and_cache(url: str, cache_path: str):
     """Потоковое воспроизведение с одновременным кэшированием"""
